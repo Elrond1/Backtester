@@ -27,8 +27,8 @@ from backtester.visualization.charts import plot_backtest
 
 SYMBOL    = "BTC/USDT"
 TIMEFRAME = "1h"
-SINCE     = "2023-01-01"
-UNTIL     = "2024-01-01"
+SINCE     = "2025-12-17"   # Coinalyze free tier: ~88 days of intraday history
+UNTIL     = None           # until now
 CAPITAL   = 10_000.0
 COMMISSION = 0.001
 SLIPPAGE   = 0.0005
@@ -52,10 +52,10 @@ print(liq[["liq_long", "liq_short", "liq_total"]].describe().to_string())
 # ── 2. Single backtest ────────────────────────────────────────────────────────
 print("\n" + "─"*50)
 strategy = LiquidationSpike(
-    threshold_usd=50_000_000,   # $50M per hour triggers signal
-    side="both",                # trade both long and short squeezes
-    direction="trend",          # follow the momentum
-    hold_bars=3,                # hold 3 hours after signal
+    threshold_usd=50,   # $50M per hour (Coinalyze units = millions USD)
+    side="both",        # trade both long and short squeezes
+    direction="trend",  # follow the momentum
+    hold_bars=3,        # hold 3 hours after signal
 )
 print(f"Strategy: {strategy}")
 
@@ -88,7 +88,7 @@ print("Grid search: threshold × hold_bars...")
 results = grid_search(
     LiquidationSpike,
     param_grid={
-        "threshold_usd": [20_000_000, 50_000_000, 100_000_000, 200_000_000],
+        "threshold_usd": [20, 50, 100, 200],  # millions USD
         "hold_bars":      [1, 2, 3, 6],
         "direction":      ["trend", "contrarian"],
     },

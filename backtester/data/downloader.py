@@ -136,14 +136,21 @@ class BinanceVisionDownloader:
 
     @staticmethod
     def _process_klines(raw: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
-        raw["open_time"] = pd.to_datetime(raw["open_time"], unit="ms", utc=True)
+        # Binance changed timestamp format: pre-2026 = milliseconds (13 digits),
+        # 2026+ = microseconds (16 digits). Detect and convert accordingly.
+        sample = int(raw["open_time"].iloc[0])
+        unit = "us" if sample > 1e15 else "ms"
+        raw["open_time"] = pd.to_datetime(raw["open_time"], unit=unit, utc=True)
         raw = raw.set_index("open_time").sort_index()
 
         for col in ("open", "high", "low", "close", "volume", "quote_volume"):
             raw[col] = pd.to_numeric(raw[col])
         raw["trades"] = pd.to_numeric(raw["trades"], downcast="integer")
 
-        raw = raw.loc[start:end]
+        # Normalize tz to pandas UTC to avoid "same UTC offset" errors
+        start_ts = pd.Timestamp(start).tz_convert("UTC")
+        end_ts = pd.Timestamp(end).tz_convert("UTC")
+        raw = raw.loc[start_ts:end_ts]
         return raw[["open", "high", "low", "close", "volume", "quote_volume", "trades"]]
 
 

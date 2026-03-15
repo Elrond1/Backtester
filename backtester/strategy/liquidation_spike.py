@@ -30,20 +30,20 @@ class LiquidationSpike(Strategy):
 
     Parameters
     ----------
-    threshold_usd   : Minimum liquidation volume (USD) to trigger signal.
-                      e.g. 50_000_000 = $50M in one hour
+    threshold_usd   : Minimum liquidation volume in millions USD to trigger signal.
+                      e.g. 50 = $50M in one hour  (Coinalyze data is in millions USD)
     side            : "both" | "long_only" | "short_only"
                       which direction of liquidation to trade
     direction       : "trend" | "contrarian"
     hold_bars       : How many bars to hold the position after entry
-    zscore_mode     : If True, use Z-score > threshold instead of raw USD value
-                      (more adaptive to market regime)
+    zscore_mode     : If True, use Z-score > threshold instead of raw value
+                      (more adaptive to market regime, threshold becomes z-score units)
     zscore_window   : Rolling window for Z-score calculation
     """
 
     def __init__(
         self,
-        threshold_usd: float = 50_000_000,
+        threshold_usd: float = 50,  # $50M in Coinalyze units (millions USD)
         side: str = "both",
         direction: str = "trend",
         hold_bars: int = 3,

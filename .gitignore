@@ -28,3 +28,4 @@ backtest_result.html
 
 # macOS
 .DS_Store
+.env

@@ -18,9 +18,17 @@ Set key via: export COINALYZE_API_KEY=your_key
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import requests
+
+# Load .env from project root if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parents[2] / ".env")
+except ImportError:
+    pass
 
 _BASE = "https://api.coinalyze.net/v1"
 
@@ -137,12 +145,14 @@ class CoinalyzeDownloader:
             )
 
         df = pd.DataFrame(all_rows)
-        # Coinalyze response fields: t=timestamp(ms), l=long_liq, s=short_liq
-        df["ts"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+        # Coinalyze response fields: t=timestamp(seconds), l=long_liq, s=short_liq
+        df["ts"] = pd.to_datetime(df["t"], unit="s", utc=True)
         df = df.set_index("ts").sort_index()
         df = df.rename(columns={"l": "liq_long", "s": "liq_short"})
         df["liq_total"] = df["liq_long"] + df["liq_short"]
 
+        # NOTE: Coinalyze returns values in millions of USD.
+        # liq_long=50 means $50M of long liquidations in that period.
         return df[["liq_long", "liq_short", "liq_total"]]
 
     @staticmethod
