@@ -52,10 +52,9 @@ print(liq[["liq_long", "liq_short", "liq_total"]].describe().to_string())
 # ── 2. Single backtest ────────────────────────────────────────────────────────
 print("\n" + "─"*50)
 strategy = LiquidationSpike(
-    threshold_usd=50,   # $50M per hour (Coinalyze units = millions USD)
-    side="both",        # trade both long and short squeezes
-    direction="trend",  # follow the momentum
-    hold_bars=3,        # hold 3 hours after signal
+    long_liq_threshold=50,   # $50M long liq → buy dip
+    short_liq_threshold=50,  # $50M short liq → ride squeeze
+    hold_bars=6,
 )
 print(f"Strategy: {strategy}")
 
@@ -77,7 +76,7 @@ liq_spike_short = liq["liq_short"].reindex(df.index, method="ffill")
 
 plot_backtest(
     result, df,
-    title=f"{SYMBOL} {TIMEFRAME} — Liquidation Spike (${strategy.threshold_usd/1e6:.0f}M)",
+    title=f"{SYMBOL} {TIMEFRAME} — Liquidation Spike (long≥${strategy.long_liq_threshold}M / short≥${strategy.short_liq_threshold}M)",
     save_html="liquidation_backtest.html",
 )
 
@@ -88,9 +87,10 @@ print("Grid search: threshold × hold_bars...")
 results = grid_search(
     LiquidationSpike,
     param_grid={
-        "threshold_usd": [20, 50, 100, 200],  # millions USD
-        "hold_bars":      [1, 2, 3, 6],
-        "direction":      ["trend", "contrarian"],
+        "long_liq_threshold":  [20, 50, 100, 200],
+        "short_liq_threshold": [20, 50, 100],
+        "hold_bars":           [3, 6, 12],
+        "ma_filter":           [False, True],
     },
     df=df,
     metric="sharpe_ratio",
@@ -104,6 +104,6 @@ results = grid_search(
 
 print("\nTop 10 combinations:")
 print(results.head(10)[[
-    "threshold_usd", "hold_bars", "direction",
+    "long_liq_threshold", "short_liq_threshold", "hold_bars", "ma_filter",
     "sharpe_ratio", "total_return_pct", "max_drawdown_pct", "total_trades"
 ]].to_string(index=False))

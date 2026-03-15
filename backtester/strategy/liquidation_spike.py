@@ -1,132 +1,120 @@
 """
 LiquidationSpike strategy.
 
-Logic:
-  - When hourly long liquidations exceed threshold → shorts got squeezed → go LONG
-    (price pumped hard, momentum likely continues 1 bar)
-  - When hourly short liquidations exceed threshold → longs got squeezed → go SHORT
-    (price dumped hard, momentum likely continues 1 bar)
+Logic (trend-following):
+  short liq spike (shorts squeezed = price pumped)  → go LONG  (ride the squeeze)
+  long  liq spike (longs  squeezed = price dumped)  → go SHORT (ride the dump)
 
-  Uses aux["liq"] DataFrame (liq_long, liq_short, liq_total) aligned with OHLCV.
+Optional MA filter avoids trading against the macro trend:
+  ma_filter=True → only long when price > MA, only short when price < MA
 
-Direction modes:
-  "trend"       — trade in direction of the squeeze (default)
-  "contrarian"  — fade the move (mean reversion)
-
-Position sizing note:
-  The 20% capital / 1% target is handled at run_backtest level via
-  initial_capital and commission settings. The strategy only outputs signals.
+Uses aux["liq"] DataFrame with columns liq_long, liq_short (in millions USD).
 """
 
 import pandas as pd
 import numpy as np
 
 from backtester.strategy.base import Strategy
+from backtester.strategy.indicators import sma
 
 
 class LiquidationSpike(Strategy):
     """
-    Opens a position when a liquidation spike is detected.
-
     Parameters
     ----------
-    threshold_usd   : Minimum liquidation volume in millions USD to trigger signal.
-                      e.g. 50 = $50M in one hour  (Coinalyze data is in millions USD)
-    side            : "both" | "long_only" | "short_only"
-                      which direction of liquidation to trade
-    direction       : "trend" | "contrarian"
-    hold_bars       : How many bars to hold the position after entry
-    zscore_mode     : If True, use Z-score > threshold instead of raw value
-                      (more adaptive to market regime, threshold becomes z-score units)
-    zscore_window   : Rolling window for Z-score calculation
+    long_liq_threshold  : long liq spike in $M → SHORT signal (longs got wiped)
+    short_liq_threshold : short liq spike in $M → LONG  signal (shorts got wiped)
+    hold_bars           : bars to hold after entry
+    zscore_mode         : use z-score instead of absolute threshold
+    zscore_window       : rolling window for z-score
+    zscore_threshold    : z-score cutoff (e.g. 2.0)
+    ma_filter           : only trade in direction of MA trend
+    ma_period           : MA period for trend filter
+    min_spike_pct       : min abs bar move (%) to confirm spike, 0 = disabled
     """
 
     def __init__(
         self,
-        threshold_usd: float = 50,  # $50M in Coinalyze units (millions USD)
-        side: str = "both",
-        direction: str = "trend",
-        hold_bars: int = 3,
-        zscore_mode: bool = False,
-        zscore_window: int = 168,   # 1 week of hourly bars
+        long_liq_threshold:  float = 50,
+        short_liq_threshold: float = 50,
+        hold_bars:     int   = 3,
+        zscore_mode:   bool  = False,
+        zscore_window: int   = 168,
+        zscore_threshold: float = 2.0,
+        ma_filter:     bool  = False,
+        ma_period:     int   = 48,
+        min_spike_pct: float = 0.0,
     ):
-        self.threshold_usd = threshold_usd
-        self.side = side
-        self.direction = direction
-        self.hold_bars = hold_bars
-        self.zscore_mode = zscore_mode
-        self.zscore_window = zscore_window
+        self.long_liq_threshold  = long_liq_threshold
+        self.short_liq_threshold = short_liq_threshold
+        self.hold_bars           = hold_bars
+        self.zscore_mode         = zscore_mode
+        self.zscore_window       = zscore_window
+        self.zscore_threshold    = zscore_threshold
+        self.ma_filter           = ma_filter
+        self.ma_period           = ma_period
+        self.min_spike_pct       = min_spike_pct
 
-    def generate_signals(
-        self,
-        df: pd.DataFrame,
-        aux: dict | None = None,
-    ) -> pd.Series:
+    def generate_signals(self, df: pd.DataFrame, aux: dict | None = None) -> pd.Series:
         if aux is None or "liq" not in aux:
-            raise ValueError(
-                "LiquidationSpike requires aux={'liq': liquidations_df}.\n"
-                "Use: run_backtest(df, strategy, aux={'liq': liq_df})"
-            )
+            raise ValueError("LiquidationSpike requires aux={'liq': liquidations_df}")
 
         liq = aux["liq"].reindex(df.index, method="ffill")
-
-        long_vol = liq["liq_long"].fillna(0)
+        long_vol  = liq["liq_long"].fillna(0)
         short_vol = liq["liq_short"].fillna(0)
 
         if self.zscore_mode:
-            long_trigger = self._zscore(long_vol) > self.threshold_usd
-            short_trigger = self._zscore(short_vol) > self.threshold_usd
+            long_score  = self._zscore(long_vol,  self.zscore_window)
+            short_score = self._zscore(short_vol, self.zscore_window)
+            long_spike  = long_score  > self.zscore_threshold
+            short_spike = short_score > self.zscore_threshold
         else:
-            long_trigger = long_vol > self.threshold_usd
-            short_trigger = short_vol > self.threshold_usd
+            long_spike  = long_vol  > self.long_liq_threshold
+            short_spike = short_vol > self.short_liq_threshold
 
-        # Direction: who got liquidated, which way to trade
-        # shorts squeezed (liq_short spike) → price pumped → LONG in trend mode
-        # longs squeezed (liq_long spike)   → price dumped → SHORT in trend mode
-        if self.direction == "trend":
-            buy_signal = short_trigger   # shorts squeezed → follow pump
-            sell_signal = long_trigger   # longs squeezed → follow dump
-        else:  # contrarian
-            buy_signal = long_trigger    # longs squeezed → fade the dump
-            sell_signal = short_trigger  # shorts squeezed → fade the pump
+        # Optional: require meaningful price move on the spike bar
+        if self.min_spike_pct > 0:
+            bar_move = (df["close"] / df["open"] - 1).abs()
+            confirmed = bar_move > (self.min_spike_pct / 100)
+            long_spike  = long_spike  & confirmed
+            short_spike = short_spike & confirmed
 
-        if self.side == "long_only":
-            sell_signal = pd.Series(False, index=df.index)
-        elif self.side == "short_only":
-            buy_signal = pd.Series(False, index=df.index)
+        # short liq spike → ride pump → LONG
+        # long  liq spike → ride dump → SHORT
+        buy_signal  = short_spike
+        sell_signal = long_spike
 
-        # Convert spike → hold for N bars
-        raw = pd.Series(0, index=df.index, dtype=float)
-        raw[buy_signal] = 1.0
+        # MA trend filter: only trade in macro direction
+        if self.ma_filter:
+            ma = sma(df["close"], self.ma_period)
+            above_ma = df["close"] > ma
+            buy_signal  = buy_signal  & above_ma
+            sell_signal = sell_signal & ~above_ma
+
+        raw = pd.Series(0.0, index=df.index)
+        raw[buy_signal]  =  1.0
         raw[sell_signal] = -1.0
 
-        # Extend signal for hold_bars (forward fill after each trigger)
-        signal = self._extend_signal(raw, self.hold_bars)
-        return signal
+        return self._extend_signal(raw, self.hold_bars)
 
     @staticmethod
-    def _zscore(series: pd.Series, window: int = 168) -> pd.Series:
+    def _zscore(series: pd.Series, window: int) -> pd.Series:
         mean = series.rolling(window, min_periods=24).mean()
-        std = series.rolling(window, min_periods=24).std()
+        std  = series.rolling(window, min_periods=24).std()
         return (series - mean) / std.replace(0, np.nan)
 
     @staticmethod
     def _extend_signal(raw: pd.Series, hold_bars: int) -> pd.Series:
-        """Hold position for hold_bars after each spike."""
-        result = pd.Series(0.0, index=raw.index)
-        vals = raw.values
-        out = result.values.copy()
-        last_val = 0.0
+        out = raw.values.copy().astype(float)
+        last_val  = 0.0
         bars_held = 0
-
-        for i in range(len(vals)):
-            if vals[i] != 0:
-                last_val = vals[i]
+        for i in range(len(out)):
+            if raw.values[i] != 0:
+                last_val  = raw.values[i]
                 bars_held = hold_bars
             if bars_held > 0:
-                out[i] = last_val
+                out[i]     = last_val
                 bars_held -= 1
             else:
                 out[i] = 0.0
-
         return pd.Series(out, index=raw.index)
