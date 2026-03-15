@@ -208,5 +208,82 @@ class DataCache:
             rows.append({"table": t, "rows": row[0], "from": row[1], "to": row[2]})
         return pd.DataFrame(rows)
 
+    # ---------------------------------------------------------- Liquidations
+
+    def _ensure_liq_table(self, table: str):
+        self._conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                ts          TIMESTAMPTZ PRIMARY KEY,
+                liq_long    DOUBLE,
+                liq_short   DOUBLE,
+                liq_total   DOUBLE
+            )
+        """)
+
+    def _liq_table(self, exchange: str, symbol: str, timeframe: str) -> str:
+        safe = symbol.replace("/", "").replace("-", "").lower()
+        return f"liq__{exchange.lower()}__{safe}__{timeframe.lower()}"
+
+    def get_liq_range(
+        self, exchange: str, symbol: str, timeframe: str
+    ) -> tuple[datetime | None, datetime | None]:
+        table = self._liq_table(exchange, symbol, timeframe)
+        tables = self._conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+            [table]
+        ).fetchone()
+        if not tables:
+            return None, None
+        row = self._conn.execute(f"SELECT MIN(ts), MAX(ts) FROM {table}").fetchone()
+        if row is None or row[0] is None:
+            return None, None
+        return row[0], row[1]
+
+    def load_liq(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame:
+        table = self._liq_table(exchange, symbol, timeframe)
+        tables = self._conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_name = ?",
+            [table]
+        ).fetchone()
+        if not tables:
+            return pd.DataFrame()
+        df = self._conn.execute(
+            f"SELECT * FROM {table} WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            [start, end]
+        ).df()
+        if df.empty:
+            return df
+        df = df.set_index("ts")
+        df.index = pd.to_datetime(df.index, utc=True)
+        return df
+
+    def save_liq(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        df: pd.DataFrame,
+    ):
+        if df.empty:
+            return
+        table = self._liq_table(exchange, symbol, timeframe)
+        self._ensure_liq_table(table)
+        tmp = df.reset_index().rename(columns={"ts": "ts", df.index.name or "ts": "ts"})
+        if "ts" not in tmp.columns:
+            tmp = df.copy().reset_index()
+            tmp.columns = ["ts"] + list(df.columns)
+        self._conn.register("_tmp_liq", tmp)
+        self._conn.execute(f"""
+            INSERT OR IGNORE INTO {table}
+            SELECT ts, liq_long, liq_short, liq_total FROM _tmp_liq
+        """)
+
     def close(self):
         self._conn.close()

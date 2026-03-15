@@ -82,6 +82,54 @@ def get_ohlcv(
     return cache.load_ohlcv(exchange, symbol, timeframe, start, end)
 
 
+def get_liquidations(
+    symbol: str,
+    since: Union[str, datetime] = "2023-01-01",
+    until: Union[str, datetime, None] = None,
+    timeframe: str = "1h",
+    exchange: str = "binance",
+    api_key: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Download and cache hourly liquidation aggregates from Coinglass.
+
+    Requires free Coinglass API key: https://coinglass.com → Profile → API
+    Set via env var: export COINGLASS_API_KEY=your_key
+
+    Parameters
+    ----------
+    symbol    : "BTC/USDT" or "BTC"
+    timeframe : "1h", "4h", "12h", "1d"
+
+    Returns
+    -------
+    pd.DataFrame with DatetimeIndex (UTC) and columns:
+      liq_long, liq_short, liq_total (USD values)
+    """
+    from backtester.data.coinglass import CoinglassDownloader
+
+    cache = _cache if db_path is None else DataCache(db_path)
+
+    start = _parse_dt(since)
+    end = _parse_dt(until) if until else datetime.now(tz=timezone.utc)
+
+    cached_min, cached_max = cache.get_liq_range(exchange, symbol, timeframe)
+
+    needs_download = (
+        cached_min is None
+        or start < cached_min
+        or end > cached_max
+    )
+
+    if needs_download:
+        dl = CoinglassDownloader(api_key=api_key)
+        df = dl.fetch_liquidations(symbol, start, end, timeframe)
+        cache.save_liq(exchange, symbol, timeframe, df)
+
+    return cache.load_liq(exchange, symbol, timeframe, start, end)
+
+
 def get_aggtrades(
     symbol: str,
     since: Union[str, datetime] = "2024-01-01",
