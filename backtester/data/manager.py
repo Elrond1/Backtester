@@ -92,22 +92,30 @@ def get_liquidations(
     db_path: Optional[Path] = None,
 ) -> pd.DataFrame:
     """
-    Download and cache hourly liquidation aggregates from Coinglass.
+    Download and cache hourly liquidation aggregates from Coinalyze.
 
-    Requires free Coinglass API key: https://coinglass.com → Profile → API
-    Set via env var: export COINGLASS_API_KEY=your_key
+    Requires FREE Coinalyze API key:
+      1. Register at https://coinalyze.net
+      2. Profile → API Key (free)
+      3. export COINALYZE_API_KEY=your_key
 
     Parameters
     ----------
-    symbol    : "BTC/USDT" or "BTC"
+    symbol    : "BTC/USDT"
     timeframe : "1h", "4h", "12h", "1d"
+    exchange  : "binance" (default), "bybit", "okx"
 
     Returns
     -------
     pd.DataFrame with DatetimeIndex (UTC) and columns:
       liq_long, liq_short, liq_total (USD values)
+
+    Note
+    ----
+    Free tier retains ~2000 most recent intraday points per symbol.
+    Daily aggregates are preserved indefinitely.
     """
-    from backtester.data.coinglass import CoinglassDownloader
+    from backtester.data.coinalyze import CoinalyzeDownloader
 
     cache = _cache if db_path is None else DataCache(db_path)
 
@@ -123,8 +131,8 @@ def get_liquidations(
     )
 
     if needs_download:
-        dl = CoinglassDownloader(api_key=api_key)
-        df = dl.fetch_liquidations(symbol, start, end, timeframe)
+        dl = CoinalyzeDownloader(api_key=api_key)
+        df = dl.fetch_liquidations(symbol, start, end, timeframe, exchange)
         cache.save_liq(exchange, symbol, timeframe, df)
 
     return cache.load_liq(exchange, symbol, timeframe, start, end)

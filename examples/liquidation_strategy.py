@@ -1,10 +1,10 @@
 """
 Example: LiquidationSpike strategy on BTC/USDT 1h.
 
-Requires free Coinglass API key:
-  1. Register at https://coinglass.com
-  2. Profile → API → copy key
-  3. export COINGLASS_API_KEY=your_key_here
+Requires free Coinalyze API key:
+  1. Register at https://coinalyze.net
+  2. Profile → API Key (free)
+  3. export COINALYZE_API_KEY=your_key_here
 
 Strategy logic:
   - When hourly short liquidations > $50M → shorts squeezed → go LONG (trend)
