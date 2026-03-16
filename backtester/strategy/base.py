@@ -1,4 +1,4 @@
-"""Abstract Strategy base class."""
+1"""Abstract Strategy base class."""
 
 from abc import ABC, abstractmethod
 from typing import Optional

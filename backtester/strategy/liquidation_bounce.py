@@ -35,6 +35,9 @@ class LiquidationBounce(Strategy):
     rsi_oversold        : RSI threshold for LONG entry (e.g. 40 = enter only if RSI < 40)
     rsi_overbought      : RSI threshold for SHORT entry (e.g. 60)
     min_spike_pct       : min abs bar move (%) to confirm spike, 0 = disabled
+    trend_filter        : only trade in macro direction — LONG only above MA, SHORT only below MA
+                          prevents catching falling knives in downtrends
+    trend_period        : MA period for trend filter (default 48 = 2 days on 1h)
     """
 
     def __init__(
@@ -50,6 +53,8 @@ class LiquidationBounce(Strategy):
         rsi_oversold:        float = 40,
         rsi_overbought:      float = 60,
         min_spike_pct:       float = 0.0,
+        trend_filter:        bool  = False,
+        trend_period:        int   = 48,
     ):
         self.long_liq_threshold  = long_liq_threshold
         self.short_liq_threshold = short_liq_threshold
@@ -62,6 +67,8 @@ class LiquidationBounce(Strategy):
         self.rsi_oversold        = rsi_oversold
         self.rsi_overbought      = rsi_overbought
         self.min_spike_pct       = min_spike_pct
+        self.trend_filter        = trend_filter
+        self.trend_period        = trend_period
 
     def generate_signals(self, df: pd.DataFrame, aux: dict | None = None) -> pd.Series:
         if aux is None or "liq" not in aux:
@@ -99,6 +106,15 @@ class LiquidationBounce(Strategy):
             r = rsi(df["close"], self.rsi_period)
             buy_signal  = buy_signal  & (r < self.rsi_oversold)
             sell_signal = sell_signal & (r > self.rsi_overbought)
+
+        # Trend filter: only trade in macro direction
+        # Avoids catching falling knives (long) in downtrend
+        # or fading legitimate pumps in an uptrend
+        if self.trend_filter:
+            ma = sma(df["close"], self.trend_period)
+            above_ma = df["close"] > ma
+            buy_signal  = buy_signal  & above_ma    # only long if above MA
+            sell_signal = sell_signal & ~above_ma   # only short if below MA
 
         raw = pd.Series(0.0, index=df.index)
         raw[buy_signal]  =  1.0

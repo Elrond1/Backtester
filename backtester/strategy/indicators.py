@@ -104,3 +104,71 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     cumtp = tp_vol.groupby(date).cumsum()
     cumvol = df["volume"].groupby(date).cumsum()
     return cumtp / cumvol
+
+
+def supertrend(
+    df: pd.DataFrame,
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Supertrend indicator.
+
+    Returns
+    -------
+    direction : pd.Series — 1 = bullish, -1 = bearish
+    line      : pd.Series — Supertrend line value (lower band or upper band)
+    """
+    hl2 = (df["high"] + df["low"]) / 2
+    atr_val = atr(df, period)
+
+    basic_upper = hl2 + multiplier * atr_val
+    basic_lower = hl2 - multiplier * atr_val
+
+    n = len(df)
+    close = df["close"].values
+    bu    = basic_upper.values
+    bl    = basic_lower.values
+
+    final_upper = bu.copy()
+    final_lower = bl.copy()
+    direction   = np.ones(n)   # start bullish
+    line        = np.full(n, np.nan)
+
+    for i in range(1, n):
+        if np.isnan(bu[i]) or np.isnan(bl[i]):
+            # ATR warmup period — carry direction, leave bands NaN
+            direction[i] = direction[i - 1]
+            continue
+
+        # Upper band only moves down (tightens), or resets when price breaks above
+        if np.isnan(final_upper[i - 1]):
+            final_upper[i] = bu[i]
+        elif bu[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1]:
+            final_upper[i] = bu[i]
+        else:
+            final_upper[i] = final_upper[i - 1]
+
+        # Lower band only moves up (tightens), or resets when price breaks below
+        if np.isnan(final_lower[i - 1]):
+            final_lower[i] = bl[i]
+        elif bl[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1]:
+            final_lower[i] = bl[i]
+        else:
+            final_lower[i] = final_lower[i - 1]
+
+        # Direction: flip when price crosses the active band
+        prev_dir = direction[i - 1]
+        if prev_dir == -1 and close[i] > final_upper[i]:
+            direction[i] = 1
+        elif prev_dir == 1 and close[i] < final_lower[i]:
+            direction[i] = -1
+        else:
+            direction[i] = prev_dir
+
+        line[i] = final_lower[i] if direction[i] == 1 else final_upper[i]
+
+    return (
+        pd.Series(direction, index=df.index),
+        pd.Series(line,      index=df.index),
+    )

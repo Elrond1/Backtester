@@ -28,17 +28,20 @@ def grid_search(
     aux: dict | None = None,
     symbol: str = "",
     timeframe: str = "",
+    run_kwargs: dict | None = None,
+    strategy_kwargs: dict | None = None,
 ) -> pd.DataFrame:
     """
     Exhaustive grid search over all parameter combinations.
 
     Parameters
     ----------
-    strategy_class : Strategy subclass (not an instance)
-    param_grid     : {"fast": [10, 20, 30], "slow": [50, 100, 200]}
-    df             : OHLCV DataFrame
-    metric         : Column to sort results by (descending)
-    ...
+    strategy_class  : Strategy subclass (not an instance)
+    param_grid      : {"fast": [10, 20, 30], "slow": [50, 100, 200]}
+    df              : OHLCV DataFrame
+    metric          : Column to sort results by (descending)
+    run_kwargs      : Extra kwargs forwarded to run_backtest (e.g. take_profit, stop_loss)
+    strategy_kwargs : Fixed kwargs always passed to strategy constructor (not searched over)
 
     Returns
     -------
@@ -54,6 +57,9 @@ def grid_search(
     )
     print(results.head(10))
     """
+    run_kwargs      = run_kwargs      or {}
+    strategy_kwargs = strategy_kwargs or {}
+
     keys = list(param_grid.keys())
     combinations = list(itertools.product(*[param_grid[k] for k in keys]))
 
@@ -61,7 +67,7 @@ def grid_search(
     for combo in tqdm(combinations, desc="Grid search"):
         params = dict(zip(keys, combo))
         try:
-            strategy = strategy_class(**params)
+            strategy = strategy_class(**{**strategy_kwargs, **params})
             result = run_backtest(
                 df, strategy,
                 initial_capital=initial_capital,
@@ -70,6 +76,7 @@ def grid_search(
                 symbol=symbol,
                 timeframe=timeframe,
                 aux=aux,
+                **run_kwargs,
             )
             row = {**params, **result.metrics}
             rows.append(row)
@@ -95,6 +102,8 @@ def random_search(
     symbol: str = "",
     timeframe: str = "",
     seed: int | None = None,
+    run_kwargs: dict | None = None,
+    strategy_kwargs: dict | None = None,
 ) -> pd.DataFrame:
     """
     Random parameter search — faster than grid search for large spaces.
@@ -109,6 +118,9 @@ def random_search(
     -------
     pd.DataFrame sorted by metric descending.
     """
+    run_kwargs      = run_kwargs      or {}
+    strategy_kwargs = strategy_kwargs or {}
+
     if seed is not None:
         random.seed(seed)
 
@@ -116,7 +128,7 @@ def random_search(
     for _ in tqdm(range(n_iter), desc="Random search"):
         params = {k: random.choice(list(v)) for k, v in param_distributions.items()}
         try:
-            strategy = strategy_class(**params)
+            strategy = strategy_class(**{**strategy_kwargs, **params})
             result = run_backtest(
                 df, strategy,
                 initial_capital=initial_capital,
@@ -125,6 +137,7 @@ def random_search(
                 symbol=symbol,
                 timeframe=timeframe,
                 aux=aux,
+                **run_kwargs,
             )
             row = {**params, **result.metrics}
             rows.append(row)
