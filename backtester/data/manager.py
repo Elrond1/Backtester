@@ -4,7 +4,7 @@ Automatically picks data.binance.vision for Binance and ccxt for others.
 Caches everything in DuckDB — incremental updates on repeated calls.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Union
 
@@ -73,13 +73,50 @@ def get_ohlcv(
 
     for dl_start, dl_end in to_download:
         if exchange.lower() == "binance":
-            df = _vision.fetch_klines(symbol, timeframe, dl_start, dl_end)
+            if timeframe == "1s":
+                # Download and cache month-by-month to avoid loading
+                # 190M+ rows into memory at once.
+                _fetch_1s_incremental(cache, symbol, dl_start, dl_end)
+            else:
+                df = _vision.fetch_klines(symbol, timeframe, dl_start, dl_end)
+                cache.save_ohlcv(exchange, symbol, timeframe, df)
         else:
             downloader = CCXTDownloader(exchange)
             df = downloader.fetch_klines(symbol, timeframe, dl_start, dl_end)
-        cache.save_ohlcv(exchange, symbol, timeframe, df)
+            cache.save_ohlcv(exchange, symbol, timeframe, df)
 
     return cache.load_ohlcv(exchange, symbol, timeframe, start, end)
+
+
+def _fetch_1s_incremental(
+    cache: "DataCache",
+    symbol: str,
+    start: datetime,
+    end: datetime,
+) -> None:
+    """Download 1s klines one month at a time and save each to DuckDB immediately.
+
+    This avoids accumulating 190M+ rows in RAM before saving.
+    """
+    current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    while current < end:
+        next_month = (current + timedelta(days=32)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        chunk_end = min(next_month, end)
+
+        # Skip if this month is already cached
+        cached_min, cached_max = cache.get_ohlcv_range("binance", symbol, "1s")
+        if cached_min is not None and cached_max is not None:
+            if current >= cached_min and chunk_end <= cached_max:
+                current = next_month
+                continue
+
+        df = _vision.fetch_klines(symbol, "1s", current, chunk_end)
+        if not df.empty:
+            cache.save_ohlcv("binance", symbol, "1s", df)
+
+        current = next_month
 
 
 def get_liquidations(

@@ -21,14 +21,14 @@ Usage:
 import os
 import tempfile
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from backtester.data.manager import get_ohlcv, get_seconds
-from backtester.engine.sr_grid_engine import run_sr_grid_backtest
+from backtester.data.manager import get_ohlcv, _cache, _parse_dt, _fetch_1s_incremental
+from backtester.engine.sr_grid_engine import run_sr_grid_backtest_chunked
 
 # ── Strategy parameters ────────────────────────────────────────────────────────
 
@@ -57,18 +57,21 @@ print("\n[1/3] Loading D1 bars (extra year for S/R lookback)...")
 df_d1 = get_ohlcv(SYMBOL, "1d", since="2019-01-01")
 print(f"      {len(df_d1):,} daily bars  ({df_d1.index[0].date()} → {df_d1.index[-1].date()})")
 
-print("\n[2/3] Loading 1-second bars...")
-print("      First run downloads ~2 GB and may take 30-60 minutes.")
-print("      Subsequent runs load instantly from local cache.")
-df_1s = get_seconds(SYMBOL, since=START_DATE)
-print(f"      {len(df_1s):,} 1s bars  ({df_1s.index[0].date()} → {df_1s.index[-1].date()})")
+print("\n[2/3] Downloading 1-second bars (first run: ~15 min, then instant)...")
+start_dt = _parse_dt(START_DATE)
+end_dt   = datetime.now(timezone.utc)
+_fetch_1s_incremental(_cache, SYMBOL, start_dt, end_dt)
+print("      1-second bars ready in cache.")
 
 # ── Run backtest ───────────────────────────────────────────────────────────────
 
-print("\n[3/3] Running backtest on 1-second bars...")
-result = run_sr_grid_backtest(
-    df_1s           = df_1s,
+print("\n[3/3] Running backtest (month by month, no RAM spike)...")
+result = run_sr_grid_backtest_chunked(
+    cache           = _cache,
     df_d1           = df_d1,
+    symbol          = SYMBOL,
+    start           = start_dt,
+    end             = end_dt,
     initial_capital = INITIAL_CAP,
     order_size_pct  = ORDER_SIZE_PCT,
     first_avg_step  = FIRST_STEP,
@@ -80,7 +83,6 @@ result = run_sr_grid_backtest(
     entry_tolerance = TOLERANCE,
     commission      = COMMISSION,
     slippage        = SLIPPAGE,
-    symbol          = SYMBOL,
 )
 
 print("\n")

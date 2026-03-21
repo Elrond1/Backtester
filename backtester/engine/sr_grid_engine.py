@@ -18,6 +18,8 @@ Simulation runs on 1-second OHLCV bars for MT4 "Every Tick" precision.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -224,6 +226,211 @@ def run_sr_grid_backtest(
     eq_vals  = [e[1] for e in equity_events]
     equity   = pd.Series(eq_vals, index=eq_idx, name="equity")
     equity   = equity[~equity.index.duplicated(keep="last")]
+
+    from backtester.engine.metrics import compute_metrics
+    returns = equity.pct_change().fillna(0)
+    metrics = compute_metrics(returns, equity, trades_df, initial_capital)
+
+    return SRGridResult(
+        equity=equity,
+        trades=trades_df,
+        metrics=metrics,
+        sr_levels=sr_d1,
+        symbol=symbol,
+    )
+
+
+# ── Memory-efficient chunked version ──────────────────────────────────────────
+
+def run_sr_grid_backtest_chunked(
+    cache: Any,
+    df_d1: pd.DataFrame,
+    symbol: str,
+    start: "datetime",
+    end: "datetime",
+    initial_capital: float = 10_000.0,
+    order_size_pct: float = 0.03,
+    first_avg_step: float = 0.04,
+    second_avg_step: float = 0.04,
+    subsequent_step: float = 0.02,
+    take_profit_pct: float = 0.03,
+    max_orders: int = 10,
+    lookback_d1: int = 30,
+    entry_tolerance: float = 0.005,
+    commission: float = 0.001,
+    slippage: float = 0.0005,
+) -> SRGridResult:
+    """
+    Memory-efficient S/R grid backtest: loads 1s bars one month at a time
+    from DuckDB instead of keeping all data in RAM.
+
+    Parameters
+    ----------
+    cache   : DataCache instance
+    df_d1   : Daily OHLCV DataFrame (DatetimeIndex UTC)
+    symbol  : e.g. "BTC/USDT"
+    start   : backtest start datetime (UTC)
+    end     : backtest end datetime (UTC)
+    """
+    from datetime import datetime
+
+    sr_d1      = _build_sr(df_d1, lookback_d1).dropna()
+    order_usd  = initial_capital * order_size_pct
+
+    factors = np.ones(max_orders, dtype=np.float64)
+    if max_orders > 1:
+        factors[1] = 1.0 - first_avg_step
+    if max_orders > 2:
+        factors[2] = factors[1] - second_avg_step
+    for k in range(3, max_orders):
+        factors[k] = factors[k - 1] - subsequent_step
+
+    # ── Persistent simulation state across months ──
+    trades         = []
+    capital        = initial_capital
+    in_grid        = False
+    n_orders       = 0
+    total_qty      = 0.0
+    total_invested = 0.0
+    grid_prices    = np.zeros(max_orders)
+    entry_time_val = None
+    equity_events  = []
+    first_ts       = None
+
+    current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    while current < end:
+        next_month = (current + timedelta(days=32)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        chunk_end = min(next_month, end)
+
+        print(f"  Simulating {current.strftime('%Y-%m')}...", end="\r")
+
+        df_chunk = cache.load_ohlcv("binance", symbol, "1s", current, chunk_end)
+        if df_chunk.empty:
+            current = next_month
+            continue
+
+        sr_chunk = sr_d1.reindex(df_chunk.index, method="ffill").dropna()
+        if sr_chunk.empty:
+            current = next_month
+            continue
+
+        df_sim    = df_chunk.reindex(sr_chunk.index)
+        high_arr  = df_sim["high"].values.astype(np.float64)
+        low_arr   = df_sim["low"].values.astype(np.float64)
+        close_arr = df_sim["close"].values.astype(np.float64)
+        sr_arr    = sr_chunk.values.astype(np.float64)
+        times     = sr_chunk.index
+        n         = len(times)
+
+        if first_ts is None and n > 0:
+            first_ts = times[0]
+            equity_events.append((first_ts, initial_capital))
+
+        for i in range(n):
+            sr = sr_arr[i]
+            h  = high_arr[i]
+            l  = low_arr[i]
+            c  = close_arr[i]
+
+            if in_grid:
+                avg_cost = total_invested / total_qty
+                tp_price = avg_cost * (1.0 + take_profit_pct)
+
+                if h >= tp_price:
+                    exit_price = tp_price * (1.0 - slippage)
+                    proceeds   = total_qty * exit_price
+                    exit_fee   = proceeds * commission
+                    capital   += proceeds - exit_fee
+
+                    pnl_usd = (exit_price - avg_cost) * total_qty - exit_fee
+                    pnl_pct = pnl_usd / total_invested * 100.0
+
+                    trades.append({
+                        "entry_time":   entry_time_val,
+                        "exit_time":    times[i],
+                        "side":         "long",
+                        "avg_entry":    round(avg_cost, 4),
+                        "exit_price":   round(exit_price, 4),
+                        "n_orders":     n_orders,
+                        "invested_usd": round(total_invested, 2),
+                        "pnl_usd":      round(pnl_usd, 2),
+                        "pnl_pct":      round(pnl_pct, 4),
+                    })
+                    equity_events.append((times[i], round(capital, 2)))
+
+                    in_grid        = False
+                    n_orders       = 0
+                    total_qty      = 0.0
+                    total_invested = 0.0
+                    entry_time_val = None
+
+                elif n_orders < max_orders:
+                    while n_orders < max_orders and l <= grid_prices[n_orders]:
+                        fill_price      = grid_prices[n_orders] * (1.0 + slippage)
+                        qty             = order_usd / fill_price
+                        entry_fee       = order_usd * commission
+                        capital        -= (order_usd + entry_fee)
+                        total_qty      += qty
+                        total_invested += order_usd
+                        n_orders       += 1
+
+            else:
+                if sr > 0.0 and abs(c - sr) / sr <= entry_tolerance:
+                    fill_price      = c * (1.0 + slippage)
+                    qty             = order_usd / fill_price
+                    entry_fee       = order_usd * commission
+                    capital        -= (order_usd + entry_fee)
+                    total_qty       = qty
+                    total_invested  = order_usd
+                    n_orders        = 1
+                    entry_time_val  = times[i]
+                    in_grid         = True
+                    grid_prices     = fill_price * factors
+
+        current = next_month
+
+    print()  # newline after progress
+
+    # ── Close open position at end ──
+    if in_grid and total_qty > 0.0:
+        last_close = float(df_chunk["close"].iloc[-1]) if 'df_chunk' in dir() else 0.0
+        exit_price = last_close * (1.0 - slippage) if last_close > 0 else 0.0
+        avg_cost   = total_invested / total_qty
+        proceeds   = total_qty * exit_price
+        exit_fee   = proceeds * commission
+        capital   += proceeds - exit_fee
+
+        pnl_usd = (exit_price - avg_cost) * total_qty - exit_fee
+        pnl_pct = pnl_usd / total_invested * 100.0
+
+        trades.append({
+            "entry_time":   entry_time_val,
+            "exit_time":    times[-1] if 'times' in dir() else end,
+            "side":         "long",
+            "avg_entry":    round(avg_cost, 4),
+            "exit_price":   round(exit_price, 4),
+            "n_orders":     n_orders,
+            "invested_usd": round(total_invested, 2),
+            "pnl_usd":      round(pnl_usd, 2),
+            "pnl_pct":      round(pnl_pct, 4),
+        })
+        equity_events.append((end, round(capital, 2)))
+
+    # ── Build outputs ──
+    cols = ["entry_time", "exit_time", "side", "avg_entry",
+            "exit_price", "n_orders", "invested_usd", "pnl_usd", "pnl_pct"]
+    trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(columns=cols)
+
+    if equity_events:
+        eq_idx = pd.DatetimeIndex([e[0] for e in equity_events])
+        eq_vals = [e[1] for e in equity_events]
+        equity = pd.Series(eq_vals, index=eq_idx, name="equity")
+        equity = equity[~equity.index.duplicated(keep="last")]
+    else:
+        equity = pd.Series([initial_capital], index=pd.DatetimeIndex([start]))
 
     from backtester.engine.metrics import compute_metrics
     returns = equity.pct_change().fillna(0)
