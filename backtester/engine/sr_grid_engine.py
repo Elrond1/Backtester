@@ -307,10 +307,19 @@ def run_sr_grid_backtest_chunked(
 
         print(f"  Simulating {current.strftime('%Y-%m')}...", end="\r")
 
-        df_chunk = cache.load_ohlcv("binance", symbol, "1s", current, chunk_end)
+        from backtester.data.manager import load_1s_month
+        df_chunk = load_1s_month(symbol, current.year, current.month)
         if df_chunk.empty:
             current = next_month
             continue
+
+        # Filter to requested date range within the month
+        if not df_chunk.empty:
+            df_chunk = df_chunk.loc[
+                df_chunk.index >= pd.Timestamp(current, tz="UTC")
+            ]
+            if chunk_end < end:
+                df_chunk = df_chunk.loc[df_chunk.index < pd.Timestamp(chunk_end, tz="UTC")]
 
         sr_chunk = sr_d1.reindex(df_chunk.index, method="ffill").dropna()
         if sr_chunk.empty:

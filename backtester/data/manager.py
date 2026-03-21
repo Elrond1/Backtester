@@ -2,6 +2,9 @@
 High-level data access functions.
 Automatically picks data.binance.vision for Binance and ccxt for others.
 Caches everything in DuckDB — incremental updates on repeated calls.
+
+1-second bars are stored as Parquet files (one per month) in
+~/.backtester/ticks/<SYMBOL>/ to avoid DuckDB memory issues with 190M+ rows.
 """
 
 from datetime import datetime, timezone, timedelta
@@ -15,6 +18,9 @@ from backtester.data.downloader import BinanceVisionDownloader, CCXTDownloader
 
 _cache = DataCache()
 _vision = BinanceVisionDownloader()
+
+# Directory for 1s Parquet files
+_TICKS_DIR = Path.home() / ".backtester" / "ticks"
 
 
 def _parse_dt(dt: Union[str, datetime]) -> datetime:
@@ -88,35 +94,51 @@ def get_ohlcv(
     return cache.load_ohlcv(exchange, symbol, timeframe, start, end)
 
 
+def _1s_parquet_path(symbol: str, year: int, month: int) -> Path:
+    """Path to the Parquet file for one month of 1s bars."""
+    safe = symbol.replace("/", "").upper()
+    return _TICKS_DIR / safe / f"{year:04d}-{month:02d}.parquet"
+
+
 def _fetch_1s_incremental(
-    cache: "DataCache",
+    _cache_unused,
     symbol: str,
     start: datetime,
     end: datetime,
 ) -> None:
-    """Download 1s klines one month at a time and save each to DuckDB immediately.
+    """Download 1s klines one month at a time, save as Parquet files.
 
-    This avoids accumulating 190M+ rows in RAM before saving.
+    Parquet avoids DuckDB memory issues with 190M+ row datasets.
+    Files: ~/.backtester/ticks/<SYMBOL>/YYYY-MM.parquet (~20 MB each)
     """
     current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     while current < end:
         next_month = (current + timedelta(days=32)).replace(
             day=1, hour=0, minute=0, second=0, microsecond=0
         )
-        chunk_end = min(next_month, end)
+        # Use last second of month so fetch_klines doesn't spill into next month
+        chunk_end = min(next_month - timedelta(seconds=1), end)
 
-        # Skip if this month is already cached
-        cached_min, cached_max = cache.get_ohlcv_range("binance", symbol, "1s")
-        if cached_min is not None and cached_max is not None:
-            if current >= cached_min and chunk_end <= cached_max:
-                current = next_month
-                continue
+        path = _1s_parquet_path(symbol, current.year, current.month)
+        if path.exists():
+            current = next_month
+            continue
 
         df = _vision.fetch_klines(symbol, "1s", current, chunk_end)
         if not df.empty:
-            cache.save_ohlcv("binance", symbol, "1s", df)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(path)
+            print(f"      Saved {path.name}  ({len(df):,} rows)")
 
         current = next_month
+
+
+def load_1s_month(symbol: str, year: int, month: int) -> pd.DataFrame:
+    """Load one month of 1s bars from Parquet cache. Returns empty DF if missing."""
+    path = _1s_parquet_path(symbol, year, month)
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
 
 
 def get_liquidations(
