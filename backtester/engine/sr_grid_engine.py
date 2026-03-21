@@ -315,11 +315,11 @@ def run_sr_grid_backtest_chunked(
 
         # Filter to requested date range within the month
         if not df_chunk.empty:
-            df_chunk = df_chunk.loc[
-                df_chunk.index >= pd.Timestamp(current, tz="UTC")
-            ]
+            ts_start = pd.Timestamp(current).tz_localize("UTC") if current.tzinfo is None else pd.Timestamp(current)
+            ts_end   = pd.Timestamp(chunk_end).tz_localize("UTC") if chunk_end.tzinfo is None else pd.Timestamp(chunk_end)
+            df_chunk = df_chunk.loc[df_chunk.index >= ts_start]
             if chunk_end < end:
-                df_chunk = df_chunk.loc[df_chunk.index < pd.Timestamp(chunk_end, tz="UTC")]
+                df_chunk = df_chunk.loc[df_chunk.index < ts_end]
 
         sr_chunk = sr_d1.reindex(df_chunk.index, method="ffill").dropna()
         if sr_chunk.empty:
