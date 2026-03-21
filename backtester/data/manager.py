@@ -138,6 +138,38 @@ def get_liquidations(
     return cache.load_liq(exchange, symbol, timeframe, start, end)
 
 
+def get_seconds(
+    symbol: str,
+    since: Union[str, datetime] = "2020-01-01",
+    until: Union[str, datetime, None] = None,
+    exchange: str = "binance",
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Download and cache 1-second OHLCV bars from data.binance.vision.
+
+    1-second bars give MT4 "Every Tick" precision for TP/SL simulation
+    at a fraction of the storage cost of raw aggTrades (~15-30 MB/month
+    vs ~2 GB/month for aggTrades).
+
+    Use with run_tick_backtest() for maximum accuracy.
+
+    Parameters
+    ----------
+    symbol   : "BTC/USDT"
+    since    : start date — Binance 1s klines available from ~2020
+    until    : end date (defaults to now)
+    exchange : only "binance" is supported
+
+    Returns
+    -------
+    pd.DataFrame with DatetimeIndex (UTC) and columns:
+    open, high, low, close, volume, quote_volume, trades
+    """
+    return get_ohlcv(symbol, "1s", since=since, until=until,
+                     exchange=exchange, db_path=db_path)
+
+
 def get_aggtrades(
     symbol: str,
     since: Union[str, datetime] = "2024-01-01",
