@@ -6,4 +6,3 @@ duckdb>=0.10.0
 tqdm>=4.0.0
 requests>=2.28.0
 pytz>=2023.3
-5c454d56-d1f9-4dd8-adbe-04767ad4b6b8

@@ -87,10 +87,20 @@ class BinanceVisionDownloader:
         for year, month in tqdm(months, desc=f"Downloading {sym_display} {interval}"):
             url = _vision_url("klines", symbol, interval, year, month)
             content = _download_zip(url)
-            if content is None:
-                continue
-            df = _zip_to_df(content, _KLINE_COLS)
-            frames.append(df)
+            if content is not None:
+                df = _zip_to_df(content, _KLINE_COLS)
+                frames.append(df)
+            else:
+                # Monthly file not available — fall back to daily files
+                month_start = datetime(year, month, 1, tzinfo=timezone.utc)
+                next_month = (month_start + timedelta(days=32)).replace(day=1)
+                day = month_start
+                while day < next_month:
+                    day_url = _vision_url("klines", symbol, interval, day.year, day.month, day.day)
+                    day_content = _download_zip(day_url)
+                    if day_content is not None:
+                        frames.append(_zip_to_df(day_content, _KLINE_COLS))
+                    day += timedelta(days=1)
 
         if not frames:
             return pd.DataFrame()
@@ -137,10 +147,13 @@ class BinanceVisionDownloader:
     @staticmethod
     def _process_klines(raw: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
         # Binance changed timestamp format: pre-2026 = milliseconds (13 digits),
-        # 2026+ = microseconds (16 digits). Detect and convert accordingly.
-        sample = int(raw["open_time"].iloc[0])
-        unit = "us" if sample > 1e15 else "ms"
-        raw["open_time"] = pd.to_datetime(raw["open_time"], unit=unit, utc=True)
+        # 2026+ = microseconds (16 digits). Convert per-row to handle mixed batches.
+        ts = raw["open_time"].astype(float)
+        ms_mask = ts <= 1e15  # ms values ≈ 1.7e12, us values ≈ 1.7e15
+        seconds = ts.copy()
+        seconds[ms_mask]  = ts[ms_mask]  / 1_000       # ms → seconds
+        seconds[~ms_mask] = ts[~ms_mask] / 1_000_000   # us → seconds
+        raw["open_time"] = pd.to_datetime(seconds, unit="s", utc=True)
         raw = raw.set_index("open_time").sort_index()
 
         for col in ("open", "high", "low", "close", "volume", "quote_volume"):

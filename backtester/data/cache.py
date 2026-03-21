@@ -31,7 +31,15 @@ class DataCache:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _DEFAULT_DB
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = duckdb.connect(str(self.db_path))
+        try:
+            self._conn = duckdb.connect(str(self.db_path))
+            self._read_only = False
+        except duckdb.IOException:
+            # Another process holds the write lock — open read-only
+            self._conn = duckdb.connect(str(self.db_path), read_only=True)
+            self._read_only = True
+        self._conn.execute("SET memory_limit='4GB'")
+        self._conn.execute("SET threads=4")
 
     # ------------------------------------------------------------------ OHLCV
 
@@ -100,7 +108,7 @@ class DataCache:
         timeframe: str,
         df: pd.DataFrame,
     ):
-        if df.empty:
+        if df.empty or self._read_only:
             return
         table = _table_name(exchange, symbol, timeframe)
         self._ensure_ohlcv_table(table)
@@ -179,7 +187,7 @@ class DataCache:
         symbol: str,
         df: pd.DataFrame,
     ):
-        if df.empty:
+        if df.empty or self._read_only:
             return
         table = _aggtrades_table(exchange, symbol)
         self._ensure_aggtrades_table(table)
@@ -271,7 +279,7 @@ class DataCache:
         timeframe: str,
         df: pd.DataFrame,
     ):
-        if df.empty:
+        if df.empty or self._read_only:
             return
         table = self._liq_table(exchange, symbol, timeframe)
         self._ensure_liq_table(table)

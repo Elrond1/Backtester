@@ -56,6 +56,7 @@ def plot_backtest(
 
     display_title = title or f"{result.symbol} {result.timeframe} — {result.params}"
     _style(fig, display_title)
+    _add_stats_box(fig, result)
 
     if save_html:
         fig.write_html(save_html)
@@ -225,6 +226,39 @@ def _add_volume(fig: go.Figure, df: pd.DataFrame, row: int):
             showlegend=False,
         ),
         row=row, col=1,
+    )
+
+
+def _add_stats_box(fig: go.Figure, result: "BacktestResult"):
+    m = result.metrics
+    initial = result.equity.iloc[0] if not result.equity.empty else 10_000
+    final   = result.equity.iloc[-1] if not result.equity.empty else initial
+    ret_pct = m.get("total_return_pct", 0)
+    ret_color = "#26a69a" if ret_pct >= 0 else "#ef5350"
+
+    lines = [
+        f"<b>Capital:  ${initial:,.0f} → ${final:,.0f}</b>",
+        f"Return:    <span style='color:{ret_color}'>{ret_pct:+.2f}%</span>",
+        f"Win Rate:  {m.get('win_rate_pct', 0):.1f}%",
+        f"Sharpe:    {m.get('sharpe_ratio', 0):.2f}",
+        f"Max DD:    {m.get('max_drawdown_pct', 0):.2f}%",
+        f"Trades:    {int(m.get('total_trades', 0))}",
+        f"Pft Factor:{m.get('profit_factor', 0):.2f}",
+    ]
+    text = "<br>".join(lines)
+
+    fig.add_annotation(
+        text=text,
+        xref="paper", yref="paper",
+        x=0.01, y=0.01,
+        xanchor="left", yanchor="bottom",
+        showarrow=False,
+        align="left",
+        font=dict(size=12, color="#e0e0e0", family="monospace"),
+        bgcolor="rgba(30,30,40,0.85)",
+        bordercolor="#555",
+        borderwidth=1,
+        borderpad=8,
     )
 
 
