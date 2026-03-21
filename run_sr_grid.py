@@ -151,29 +151,48 @@ fig.add_trace(go.Scatter(
     line=dict(color="#f39c12", width=1.5, dash="dash"),
 ), row=2, col=1)
 
-# Trade markers
+# Trade markers — separate LONG and SHORT
 if not result.trades.empty:
-    fig.add_trace(go.Scatter(
-        x=result.trades["entry_time"],
-        y=result.trades["avg_entry"],
-        mode="markers",
-        name="Entry",
-        marker=dict(color="#3498db", size=9, symbol="triangle-up"),
-        text=[f"Orders: {r.n_orders}<br>Invested: ${r.invested_usd:,.0f}"
-              for r in result.trades.itertuples()],
-        hovertemplate="%{text}<extra></extra>",
-    ), row=2, col=1)
+    longs  = result.trades[result.trades["side"] == "long"]
+    shorts = result.trades[result.trades["side"] == "short"]
 
-    fig.add_trace(go.Scatter(
-        x=result.trades["exit_time"],
-        y=result.trades["exit_price"],
-        mode="markers",
-        name="Exit (TP)",
-        marker=dict(color="#9b59b6", size=9, symbol="triangle-down"),
-        text=[f"PnL: ${r.pnl_usd:+,.2f} ({r.pnl_pct:+.2f}%)"
-              for r in result.trades.itertuples()],
-        hovertemplate="%{text}<extra></extra>",
-    ), row=2, col=1)
+    # Long entries
+    if not longs.empty:
+        fig.add_trace(go.Scatter(
+            x=longs["entry_time"], y=longs["avg_entry"],
+            mode="markers", name="Long Entry",
+            marker=dict(color="#2ecc71", size=10, symbol="triangle-up"),
+            text=[f"LONG  Orders:{r.n_orders}  Invested:${r.invested_usd:,.0f}"
+                  for r in longs.itertuples()],
+            hovertemplate="%{text}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=longs["exit_time"], y=longs["exit_price"],
+            mode="markers", name="Long Exit (TP)",
+            marker=dict(color="#27ae60", size=10, symbol="triangle-down"),
+            text=[f"LONG TP  PnL:${r.pnl_usd:+,.2f} ({r.pnl_pct:+.2f}%)"
+                  for r in longs.itertuples()],
+            hovertemplate="%{text}<extra></extra>",
+        ), row=2, col=1)
+
+    # Short entries
+    if not shorts.empty:
+        fig.add_trace(go.Scatter(
+            x=shorts["entry_time"], y=shorts["avg_entry"],
+            mode="markers", name="Short Entry",
+            marker=dict(color="#e74c3c", size=10, symbol="triangle-down"),
+            text=[f"SHORT  Orders:{r.n_orders}  Invested:${r.invested_usd:,.0f}"
+                  for r in shorts.itertuples()],
+            hovertemplate="%{text}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=shorts["exit_time"], y=shorts["exit_price"],
+            mode="markers", name="Short Exit (TP)",
+            marker=dict(color="#c0392b", size=10, symbol="triangle-up"),
+            text=[f"SHORT TP  PnL:${r.pnl_usd:+,.2f} ({r.pnl_pct:+.2f}%)"
+                  for r in shorts.itertuples()],
+            hovertemplate="%{text}<extra></extra>",
+        ), row=2, col=1)
 
     # ── Row 3: PnL bars ──
     colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in result.trades["pnl_usd"]]

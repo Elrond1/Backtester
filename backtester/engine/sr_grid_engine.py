@@ -52,6 +52,23 @@ class SRGridResult:
         return self.report()
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _grid_trade(entry_time, exit_time, side, avg_entry, exit_price,
+                n_orders, invested_usd, pnl_usd, pnl_pct) -> dict:
+    return {
+        "entry_time":   entry_time,
+        "exit_time":    exit_time,
+        "side":         side,
+        "avg_entry":    round(avg_entry, 4),
+        "exit_price":   round(exit_price, 4),
+        "n_orders":     n_orders,
+        "invested_usd": round(invested_usd, 2),
+        "pnl_usd":      round(pnl_usd, 2),
+        "pnl_pct":      round(pnl_pct, 4),
+    }
+
+
 # ── S/R calculation ────────────────────────────────────────────────────────────
 
 def _build_sr(df_d1: pd.DataFrame, lookback: int) -> pd.Series:
@@ -274,28 +291,41 @@ def run_sr_grid_backtest_chunked(
     """
     from datetime import datetime
 
-    sr_d1      = _build_sr(df_d1, lookback_d1).dropna()
-    order_usd  = initial_capital * order_size_pct
+    sr_d1     = _build_sr(df_d1, lookback_d1).dropna()
+    order_usd = initial_capital * order_size_pct
 
-    factors = np.ones(max_orders, dtype=np.float64)
+    # LONG grid factors: price drops from entry  [1.0, 0.96, 0.92, 0.90, ...]
+    factors_long = np.ones(max_orders, dtype=np.float64)
     if max_orders > 1:
-        factors[1] = 1.0 - first_avg_step
+        factors_long[1] = 1.0 - first_avg_step
     if max_orders > 2:
-        factors[2] = factors[1] - second_avg_step
+        factors_long[2] = factors_long[1] - second_avg_step
     for k in range(3, max_orders):
-        factors[k] = factors[k - 1] - subsequent_step
+        factors_long[k] = factors_long[k - 1] - subsequent_step
+
+    # SHORT grid factors: price rises from entry [1.0, 1.04, 1.08, 1.10, ...]
+    factors_short = np.ones(max_orders, dtype=np.float64)
+    if max_orders > 1:
+        factors_short[1] = 1.0 + first_avg_step
+    if max_orders > 2:
+        factors_short[2] = factors_short[1] + second_avg_step
+    for k in range(3, max_orders):
+        factors_short[k] = factors_short[k - 1] + subsequent_step
 
     # ── Persistent simulation state across months ──
     trades         = []
     capital        = initial_capital
     in_grid        = False
+    side           = 0        # 1 = long, -1 = short
     n_orders       = 0
     total_qty      = 0.0
-    total_invested = 0.0
+    total_invested = 0.0      # sum of USD put in (cost basis, excl. fees)
     grid_prices    = np.zeros(max_orders)
     entry_time_val = None
     equity_events  = []
     first_ts       = None
+    last_close     = 0.0
+    times          = None
 
     current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -314,12 +344,15 @@ def run_sr_grid_backtest_chunked(
             continue
 
         # Filter to requested date range within the month
-        if not df_chunk.empty:
-            ts_start = pd.Timestamp(current).tz_localize("UTC") if current.tzinfo is None else pd.Timestamp(current)
-            ts_end   = pd.Timestamp(chunk_end).tz_localize("UTC") if chunk_end.tzinfo is None else pd.Timestamp(chunk_end)
-            df_chunk = df_chunk.loc[df_chunk.index >= ts_start]
-            if chunk_end < end:
-                df_chunk = df_chunk.loc[df_chunk.index < ts_end]
+        ts_start = pd.Timestamp(current).tz_localize("UTC") if current.tzinfo is None else pd.Timestamp(current)
+        ts_end   = pd.Timestamp(chunk_end).tz_localize("UTC") if chunk_end.tzinfo is None else pd.Timestamp(chunk_end)
+        df_chunk = df_chunk.loc[df_chunk.index >= ts_start]
+        if chunk_end < end:
+            df_chunk = df_chunk.loc[df_chunk.index < ts_end]
+
+        if df_chunk.empty:
+            current = next_month
+            continue
 
         sr_chunk = sr_d1.reindex(df_chunk.index, method="ffill").dropna()
         if sr_chunk.empty:
@@ -346,87 +379,110 @@ def run_sr_grid_backtest_chunked(
 
             if in_grid:
                 avg_cost = total_invested / total_qty
-                tp_price = avg_cost * (1.0 + take_profit_pct)
 
-                if h >= tp_price:
-                    exit_price = tp_price * (1.0 - slippage)
-                    proceeds   = total_qty * exit_price
-                    exit_fee   = proceeds * commission
-                    capital   += proceeds - exit_fee
+                if side == 1:   # ── LONG ──
+                    tp_price = avg_cost * (1.0 + take_profit_pct)
+                    if h >= tp_price:
+                        exit_price  = tp_price * (1.0 - slippage)
+                        proceeds    = total_qty * exit_price
+                        exit_fee    = proceeds * commission
+                        capital    += proceeds - exit_fee
+                        pnl_usd     = (exit_price - avg_cost) * total_qty - exit_fee
+                        pnl_pct     = pnl_usd / total_invested * 100.0
+                        trades.append(_grid_trade(entry_time_val, times[i], "long",
+                                                   avg_cost, exit_price, n_orders,
+                                                   total_invested, pnl_usd, pnl_pct))
+                        equity_events.append((times[i], round(capital, 2)))
+                        in_grid = False; n_orders = 0; total_qty = 0.0
+                        total_invested = 0.0; entry_time_val = None; side = 0
+                    elif n_orders < max_orders:
+                        while n_orders < max_orders and l <= grid_prices[n_orders]:
+                            fp   = grid_prices[n_orders] * (1.0 + slippage)
+                            qty  = order_usd / fp
+                            fee  = order_usd * commission
+                            capital -= (order_usd + fee)
+                            total_qty += qty; total_invested += order_usd; n_orders += 1
 
-                    pnl_usd = (exit_price - avg_cost) * total_qty - exit_fee
-                    pnl_pct = pnl_usd / total_invested * 100.0
-
-                    trades.append({
-                        "entry_time":   entry_time_val,
-                        "exit_time":    times[i],
-                        "side":         "long",
-                        "avg_entry":    round(avg_cost, 4),
-                        "exit_price":   round(exit_price, 4),
-                        "n_orders":     n_orders,
-                        "invested_usd": round(total_invested, 2),
-                        "pnl_usd":      round(pnl_usd, 2),
-                        "pnl_pct":      round(pnl_pct, 4),
-                    })
-                    equity_events.append((times[i], round(capital, 2)))
-
-                    in_grid        = False
-                    n_orders       = 0
-                    total_qty      = 0.0
-                    total_invested = 0.0
-                    entry_time_val = None
-
-                elif n_orders < max_orders:
-                    while n_orders < max_orders and l <= grid_prices[n_orders]:
-                        fill_price      = grid_prices[n_orders] * (1.0 + slippage)
-                        qty             = order_usd / fill_price
-                        entry_fee       = order_usd * commission
-                        capital        -= (order_usd + entry_fee)
-                        total_qty      += qty
-                        total_invested += order_usd
-                        n_orders       += 1
+                else:           # ── SHORT ──
+                    tp_price = avg_cost * (1.0 - take_profit_pct)
+                    if l <= tp_price:
+                        exit_price  = tp_price * (1.0 + slippage)
+                        proceeds    = total_qty * (avg_cost - exit_price)
+                        exit_fee    = total_invested * commission
+                        capital    += total_invested + proceeds - exit_fee
+                        pnl_usd     = proceeds - exit_fee
+                        pnl_pct     = pnl_usd / total_invested * 100.0
+                        trades.append(_grid_trade(entry_time_val, times[i], "short",
+                                                   avg_cost, exit_price, n_orders,
+                                                   total_invested, pnl_usd, pnl_pct))
+                        equity_events.append((times[i], round(capital, 2)))
+                        in_grid = False; n_orders = 0; total_qty = 0.0
+                        total_invested = 0.0; entry_time_val = None; side = 0
+                    elif n_orders < max_orders:
+                        while n_orders < max_orders and h >= grid_prices[n_orders]:
+                            fp   = grid_prices[n_orders] * (1.0 - slippage)
+                            qty  = order_usd / fp
+                            fee  = order_usd * commission
+                            capital -= (order_usd + fee)
+                            total_qty += qty; total_invested += order_usd; n_orders += 1
 
             else:
+                # ── Entry when price is within tolerance of S/R ──
                 if sr > 0.0 and abs(c - sr) / sr <= entry_tolerance:
-                    fill_price      = c * (1.0 + slippage)
-                    qty             = order_usd / fill_price
-                    entry_fee       = order_usd * commission
-                    capital        -= (order_usd + entry_fee)
-                    total_qty       = qty
-                    total_invested  = order_usd
-                    n_orders        = 1
-                    entry_time_val  = times[i]
-                    in_grid         = True
-                    grid_prices     = fill_price * factors
+                    if c >= sr:                     # price at/above S/R → SHORT
+                        fp              = c * (1.0 - slippage)
+                        qty             = order_usd / fp
+                        fee             = order_usd * commission
+                        capital        -= (order_usd + fee)
+                        total_qty       = qty
+                        total_invested  = order_usd
+                        n_orders        = 1
+                        entry_time_val  = times[i]
+                        in_grid         = True
+                        side            = -1
+                        grid_prices     = fp * factors_short
+                    else:                           # price below S/R → LONG
+                        fp              = c * (1.0 + slippage)
+                        qty             = order_usd / fp
+                        fee             = order_usd * commission
+                        capital        -= (order_usd + fee)
+                        total_qty       = qty
+                        total_invested  = order_usd
+                        n_orders        = 1
+                        entry_time_val  = times[i]
+                        in_grid         = True
+                        side            = 1
+                        grid_prices     = fp * factors_long
+
+            last_close = c
 
         current = next_month
 
     print()  # newline after progress
 
-    # ── Close open position at end ──
-    if in_grid and total_qty > 0.0:
-        last_close = float(df_chunk["close"].iloc[-1]) if 'df_chunk' in dir() else 0.0
-        exit_price = last_close * (1.0 - slippage) if last_close > 0 else 0.0
-        avg_cost   = total_invested / total_qty
-        proceeds   = total_qty * exit_price
-        exit_fee   = proceeds * commission
-        capital   += proceeds - exit_fee
+    # ── Close any open position at end of data ──
+    if in_grid and total_qty > 0.0 and last_close > 0.0:
+        avg_cost = total_invested / total_qty
+        if side == 1:
+            exit_price = last_close * (1.0 - slippage)
+            proceeds   = total_qty * exit_price
+            exit_fee   = proceeds * commission
+            capital   += proceeds - exit_fee
+            pnl_usd    = (exit_price - avg_cost) * total_qty - exit_fee
+        else:
+            exit_price = last_close * (1.0 + slippage)
+            proceeds   = total_qty * (avg_cost - exit_price)
+            exit_fee   = total_invested * commission
+            capital   += total_invested + proceeds - exit_fee
+            pnl_usd    = proceeds - exit_fee
 
-        pnl_usd = (exit_price - avg_cost) * total_qty - exit_fee
         pnl_pct = pnl_usd / total_invested * 100.0
-
-        trades.append({
-            "entry_time":   entry_time_val,
-            "exit_time":    times[-1] if 'times' in dir() else end,
-            "side":         "long",
-            "avg_entry":    round(avg_cost, 4),
-            "exit_price":   round(exit_price, 4),
-            "n_orders":     n_orders,
-            "invested_usd": round(total_invested, 2),
-            "pnl_usd":      round(pnl_usd, 2),
-            "pnl_pct":      round(pnl_pct, 4),
-        })
-        equity_events.append((end, round(capital, 2)))
+        t_end   = times[-1] if times is not None else end
+        trades.append(_grid_trade(entry_time_val, t_end,
+                                  "long" if side == 1 else "short",
+                                  avg_cost, exit_price, n_orders,
+                                  total_invested, pnl_usd, pnl_pct))
+        equity_events.append((t_end, round(capital, 2)))
 
     # ── Build outputs ──
     cols = ["entry_time", "exit_time", "side", "avg_entry",
