@@ -280,7 +280,8 @@ def run_sr_grid_backtest_chunked(
     take_profit_pct: float = 0.03,
     max_orders: int = 10,
     lookback_d1: int = 30,
-    entry_tolerance: float = 0.005,
+    lookback_short_d1: int = 7,
+    entry_tolerance: float = 0.015,
     commission: float = 0.001,
     slippage: float = 0.0005,
     ma_period: int = 200,
@@ -302,9 +303,10 @@ def run_sr_grid_backtest_chunked(
     """
     from datetime import datetime
 
-    sr_d1     = _build_sr(df_d1, lookback_d1).dropna()
-    ma_d1     = _build_ma(df_d1, ma_period).dropna()
-    order_usd = initial_capital * order_size_pct
+    sr_d1       = _build_sr(df_d1, lookback_d1).dropna()         # long S/R (30d)
+    sr_short_d1 = _build_sr(df_d1, lookback_short_d1).dropna()  # short S/R (7d)
+    ma_d1       = _build_ma(df_d1, ma_period).dropna()
+    order_usd   = initial_capital * order_size_pct
 
     # LONG grid factors: price drops from entry  [1.0, 0.96, 0.92, 0.90, ...]
     factors_long = np.ones(max_orders, dtype=np.float64)
@@ -371,14 +373,16 @@ def run_sr_grid_backtest_chunked(
             current = next_month
             continue
 
-        ma_chunk  = ma_d1.reindex(df_chunk.index, method="ffill")
+        sr_short_chunk = sr_short_d1.reindex(df_chunk.index, method="ffill")
+        ma_chunk       = ma_d1.reindex(df_chunk.index, method="ffill")
 
         df_sim    = df_chunk.reindex(sr_chunk.index)
         high_arr  = df_sim["high"].values.astype(np.float64)
         low_arr   = df_sim["low"].values.astype(np.float64)
         close_arr = df_sim["close"].values.astype(np.float64)
-        sr_arr    = sr_chunk.values.astype(np.float64)
-        ma_arr    = ma_chunk.reindex(sr_chunk.index).values.astype(np.float64)
+        sr_arr       = sr_chunk.values.astype(np.float64)
+        sr_short_arr = sr_short_chunk.reindex(sr_chunk.index).values.astype(np.float64)
+        ma_arr       = ma_chunk.reindex(sr_chunk.index).values.astype(np.float64)
         times     = sr_chunk.index
         n         = len(times)
 
@@ -444,33 +448,36 @@ def run_sr_grid_backtest_chunked(
             else:
                 # ── Entry when price is within tolerance of S/R ──
                 # MA200 trend filter: above MA → long only; below MA → short only
-                if sr > 0.0 and abs(c - sr) / sr <= entry_tolerance:
-                    ma = ma_arr[i]
-                    # MA200 determines direction only — price near S/R is the trigger
-                    if not np.isnan(ma) and c < ma:    # downtrend → SHORT at S/R (resistance)
-                        fp              = c * (1.0 - slippage)
-                        qty             = order_usd / fp
-                        fee             = order_usd * commission
-                        capital        -= (order_usd + fee)
-                        total_qty       = qty
-                        total_invested  = order_usd
-                        n_orders        = 1
-                        entry_time_val  = times[i]
-                        in_grid         = True
-                        side            = -1
-                        grid_prices     = fp * factors_short
-                    else:                              # uptrend (or no MA yet) → LONG at S/R (support)
-                        fp              = c * (1.0 + slippage)
-                        qty             = order_usd / fp
-                        fee             = order_usd * commission
-                        capital        -= (order_usd + fee)
-                        total_qty       = qty
-                        total_invested  = order_usd
-                        n_orders        = 1
-                        entry_time_val  = times[i]
-                        in_grid         = True
-                        side            = 1
-                        grid_prices     = fp * factors_long
+                ma        = ma_arr[i]
+                bearish   = not np.isnan(ma) and c < ma
+                sr_s      = sr_short_arr[i]   # 7-day S/R for shorts
+                near_long  = sr > 0.0  and abs(c - sr)   / sr   <= entry_tolerance
+                near_short = sr_s > 0.0 and abs(c - sr_s) / sr_s <= entry_tolerance
+
+                if bearish and near_short:     # downtrend → SHORT at 7-day S/R
+                    fp              = c * (1.0 - slippage)
+                    qty             = order_usd / fp
+                    fee             = order_usd * commission
+                    capital        -= (order_usd + fee)
+                    total_qty       = qty
+                    total_invested  = order_usd
+                    n_orders        = 1
+                    entry_time_val  = times[i]
+                    in_grid         = True
+                    side            = -1
+                    grid_prices     = fp * factors_short
+                elif not bearish and near_long:  # uptrend → LONG at 30-day S/R
+                    fp              = c * (1.0 + slippage)
+                    qty             = order_usd / fp
+                    fee             = order_usd * commission
+                    capital        -= (order_usd + fee)
+                    total_qty       = qty
+                    total_invested  = order_usd
+                    n_orders        = 1
+                    entry_time_val  = times[i]
+                    in_grid         = True
+                    side            = 1
+                    grid_prices     = fp * factors_long
 
             last_close = c
 

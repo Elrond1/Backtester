@@ -42,9 +42,10 @@ SECOND_STEP     = 0.04    # second averaging after another 4%
 SUBSEQ_STEP     = 0.02    # each subsequent averaging every 2%
 TAKE_PROFIT     = 0.03    # TP: 3% above average entry
 MAX_ORDERS      = 10      # maximum grid depth
-LOOKBACK_D1     = 30      # D1 bars used to compute S/R
-TOLERANCE       = 0.015   # 1.5% price tolerance around S/R for entry
-MA_PERIOD       = 200     # MA trend filter: above → long only, below → short only
+LOOKBACK_D1       = 30    # D1 bars for long S/R (support)
+LOOKBACK_SHORT_D1 = 7     # D1 bars for short S/R (resistance, shorter = closer to price)
+TOLERANCE         = 0.015 # 1.5% price tolerance around S/R for entry
+MA_PERIOD         = 200   # MA trend filter: above → long only, below → short only
 COMMISSION      = 0.001   # 0.1% per trade side (Binance)
 SLIPPAGE        = 0.0005  # 0.05% price impact
 
@@ -80,7 +81,8 @@ result = run_sr_grid_backtest_chunked(
     subsequent_step = SUBSEQ_STEP,
     take_profit_pct = TAKE_PROFIT,
     max_orders      = MAX_ORDERS,
-    lookback_d1     = LOOKBACK_D1,
+    lookback_d1       = LOOKBACK_D1,
+    lookback_short_d1 = LOOKBACK_SHORT_D1,
     entry_tolerance = TOLERANCE,
     commission      = COMMISSION,
     slippage        = SLIPPAGE,
