@@ -44,6 +44,7 @@ TAKE_PROFIT     = 0.03    # TP: 3% above average entry
 MAX_ORDERS      = 10      # maximum grid depth
 LOOKBACK_D1     = 30      # D1 bars used to compute S/R
 TOLERANCE       = 0.005   # 0.5% price tolerance around S/R for entry
+MA_PERIOD       = 200     # MA trend filter: above → long only, below → short only
 COMMISSION      = 0.001   # 0.1% per trade side (Binance)
 SLIPPAGE        = 0.0005  # 0.05% price impact
 
@@ -83,6 +84,7 @@ result = run_sr_grid_backtest_chunked(
     entry_tolerance = TOLERANCE,
     commission      = COMMISSION,
     slippage        = SLIPPAGE,
+    ma_period       = MA_PERIOD,
 )
 
 print("\n")
@@ -150,6 +152,16 @@ fig.add_trace(go.Scatter(
     name="S/R Level",
     line=dict(color="#f39c12", width=1.5, dash="dash"),
 ), row=2, col=1)
+
+if not result.ma_levels.empty:
+    ma_plot = result.ma_levels.loc[START_DATE:]
+    fig.add_trace(go.Scatter(
+        x=ma_plot.index,
+        y=ma_plot.values,
+        mode="lines",
+        name=f"MA{MA_PERIOD}",
+        line=dict(color="#9b59b6", width=1.5),
+    ), row=2, col=1)
 
 # Trade markers — separate LONG and SHORT
 if not result.trades.empty:

@@ -31,6 +31,7 @@ class SRGridResult:
     trades: pd.DataFrame   # trade log
     metrics: dict          # performance metrics
     sr_levels: pd.Series   # daily S/R midpoint level
+    ma_levels: pd.Series   # daily MA (trend filter)
     symbol: str = ""
 
     def report(self) -> str:
@@ -70,6 +71,11 @@ def _grid_trade(entry_time, exit_time, side, avg_entry, exit_price,
 
 
 # ── S/R calculation ────────────────────────────────────────────────────────────
+
+def _build_ma(df_d1: pd.DataFrame, period: int) -> pd.Series:
+    """Rolling MA of D1 close, shifted 1 bar (no look-ahead)."""
+    return df_d1["close"].rolling(period, min_periods=period).mean().shift(1)
+
 
 def _build_sr(df_d1: pd.DataFrame, lookback: int) -> pd.Series:
     """
@@ -253,6 +259,7 @@ def run_sr_grid_backtest(
         trades=trades_df,
         metrics=metrics,
         sr_levels=sr_d1,
+        ma_levels=pd.Series(dtype=float, name="ma"),
         symbol=symbol,
     )
 
@@ -276,22 +283,27 @@ def run_sr_grid_backtest_chunked(
     entry_tolerance: float = 0.005,
     commission: float = 0.001,
     slippage: float = 0.0005,
+    ma_period: int = 200,
 ) -> SRGridResult:
     """
     Memory-efficient S/R grid backtest: loads 1s bars one month at a time
-    from DuckDB instead of keeping all data in RAM.
+    from Parquet cache instead of keeping all data in RAM.
+
+    MA trend filter: price > MA → LONG only; price < MA → SHORT only.
 
     Parameters
     ----------
-    cache   : DataCache instance
-    df_d1   : Daily OHLCV DataFrame (DatetimeIndex UTC)
-    symbol  : e.g. "BTC/USDT"
-    start   : backtest start datetime (UTC)
-    end     : backtest end datetime (UTC)
+    cache      : DataCache instance (unused, kept for API compatibility)
+    df_d1      : Daily OHLCV DataFrame (DatetimeIndex UTC)
+    symbol     : e.g. "BTC/USDT"
+    start      : backtest start datetime (UTC)
+    end        : backtest end datetime (UTC)
+    ma_period  : MA period for trend filter (default 200)
     """
     from datetime import datetime
 
     sr_d1     = _build_sr(df_d1, lookback_d1).dropna()
+    ma_d1     = _build_ma(df_d1, ma_period).dropna()
     order_usd = initial_capital * order_size_pct
 
     # LONG grid factors: price drops from entry  [1.0, 0.96, 0.92, 0.90, ...]
@@ -359,11 +371,14 @@ def run_sr_grid_backtest_chunked(
             current = next_month
             continue
 
+        ma_chunk  = ma_d1.reindex(df_chunk.index, method="ffill")
+
         df_sim    = df_chunk.reindex(sr_chunk.index)
         high_arr  = df_sim["high"].values.astype(np.float64)
         low_arr   = df_sim["low"].values.astype(np.float64)
         close_arr = df_sim["close"].values.astype(np.float64)
         sr_arr    = sr_chunk.values.astype(np.float64)
+        ma_arr    = ma_chunk.reindex(sr_chunk.index).values.astype(np.float64)
         times     = sr_chunk.index
         n         = len(times)
 
@@ -428,8 +443,13 @@ def run_sr_grid_backtest_chunked(
 
             else:
                 # ── Entry when price is within tolerance of S/R ──
+                # MA200 trend filter: above MA → long only; below MA → short only
                 if sr > 0.0 and abs(c - sr) / sr <= entry_tolerance:
-                    if c >= sr:                     # price at/above S/R → SHORT
+                    ma  = ma_arr[i]
+                    bullish = np.isnan(ma) or c >= ma   # treat no-MA as neutral → allow long
+                    bearish = np.isnan(ma) or c < ma    # treat no-MA as neutral → allow short
+
+                    if c >= sr and bearish:             # at/above S/R + downtrend → SHORT
                         fp              = c * (1.0 - slippage)
                         qty             = order_usd / fp
                         fee             = order_usd * commission
@@ -441,7 +461,7 @@ def run_sr_grid_backtest_chunked(
                         in_grid         = True
                         side            = -1
                         grid_prices     = fp * factors_short
-                    else:                           # price below S/R → LONG
+                    elif c < sr and bullish:            # below S/R + uptrend → LONG
                         fp              = c * (1.0 + slippage)
                         qty             = order_usd / fp
                         fee             = order_usd * commission
