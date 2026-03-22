@@ -445,11 +445,9 @@ def run_sr_grid_backtest_chunked(
                 # ── Entry when price is within tolerance of S/R ──
                 # MA200 trend filter: above MA → long only; below MA → short only
                 if sr > 0.0 and abs(c - sr) / sr <= entry_tolerance:
-                    ma  = ma_arr[i]
-                    bullish = np.isnan(ma) or c >= ma   # treat no-MA as neutral → allow long
-                    bearish = np.isnan(ma) or c < ma    # treat no-MA as neutral → allow short
-
-                    if c >= sr and bearish:             # at/above S/R + downtrend → SHORT
+                    ma = ma_arr[i]
+                    # MA200 determines direction only — price near S/R is the trigger
+                    if not np.isnan(ma) and c < ma:    # downtrend → SHORT at S/R (resistance)
                         fp              = c * (1.0 - slippage)
                         qty             = order_usd / fp
                         fee             = order_usd * commission
@@ -461,7 +459,7 @@ def run_sr_grid_backtest_chunked(
                         in_grid         = True
                         side            = -1
                         grid_prices     = fp * factors_short
-                    elif c < sr and bullish:            # below S/R + uptrend → LONG
+                    else:                              # uptrend (or no MA yet) → LONG at S/R (support)
                         fp              = c * (1.0 + slippage)
                         qty             = order_usd / fp
                         fee             = order_usd * commission
@@ -526,5 +524,6 @@ def run_sr_grid_backtest_chunked(
         trades=trades_df,
         metrics=metrics,
         sr_levels=sr_d1,
+        ma_levels=ma_d1,
         symbol=symbol,
     )
