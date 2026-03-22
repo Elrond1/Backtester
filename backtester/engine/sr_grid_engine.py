@@ -274,9 +274,10 @@ def run_sr_grid_backtest_chunked(
     end: "datetime",
     initial_capital: float = 10_000.0,
     order_size_pct: float = 0.03,
-    first_avg_step: float = 0.04,
-    second_avg_step: float = 0.04,
-    subsequent_step: float = 0.02,
+    order_size_short_pct: float = 0.015,
+    first_avg_step: float = 0.05,
+    second_avg_step: float = 0.05,
+    subsequent_step: float = 0.03,
     take_profit_pct: float = 0.03,
     max_orders: int = 10,
     lookback_d1: int = 30,
@@ -307,7 +308,8 @@ def run_sr_grid_backtest_chunked(
     sr_d1       = _build_sr(df_d1, lookback_d1).dropna()         # long S/R (30d)
     sr_short_d1 = _build_sr(df_d1, lookback_short_d1).dropna()  # short S/R (7d)
     ma_d1       = _build_ma(df_d1, ma_period).dropna()
-    order_usd   = initial_capital * order_size_pct
+    order_usd         = initial_capital * order_size_pct
+    order_usd_short   = initial_capital * order_size_short_pct
 
     # LONG grid factors: price drops from entry  [1.0, 0.96, 0.92, 0.90, ...]
     factors_long = np.ones(max_orders, dtype=np.float64)
@@ -456,10 +458,10 @@ def run_sr_grid_backtest_chunked(
                     elif n_orders < max_orders:
                         while n_orders < max_orders and h >= grid_prices[n_orders]:
                             fp   = grid_prices[n_orders] * (1.0 - slippage)
-                            qty  = order_usd / fp
-                            fee  = order_usd * commission
-                            capital -= (order_usd + fee)
-                            total_qty += qty; total_invested += order_usd; n_orders += 1
+                            qty  = order_usd_short / fp
+                            fee  = order_usd_short * commission
+                            capital -= (order_usd_short + fee)
+                            total_qty += qty; total_invested += order_usd_short; n_orders += 1
 
             else:
                 # ── Entry when price is within tolerance of S/R ──
@@ -472,11 +474,11 @@ def run_sr_grid_backtest_chunked(
 
                 if bearish and near_short:     # downtrend → SHORT at 7-day S/R
                     fp              = c * (1.0 - slippage)
-                    qty             = order_usd / fp
-                    fee             = order_usd * commission
-                    capital        -= (order_usd + fee)
+                    qty             = order_usd_short / fp
+                    fee             = order_usd_short * commission
+                    capital        -= (order_usd_short + fee)
                     total_qty       = qty
-                    total_invested  = order_usd
+                    total_invested  = order_usd_short
                     n_orders        = 1
                     entry_time_val  = times[i]
                     in_grid         = True

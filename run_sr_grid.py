@@ -36,10 +36,11 @@ SYMBOL          = "BTC/USDT"
 START_DATE      = "2020-01-01"
 INITIAL_CAP     = 10_000.0
 
-ORDER_SIZE_PCT  = 0.03    # 3% of initial capital per order = $300
-FIRST_STEP      = 0.04    # first averaging after 4% drop
-SECOND_STEP     = 0.04    # second averaging after another 4%
-SUBSEQ_STEP     = 0.02    # each subsequent averaging every 2%
+ORDER_SIZE_PCT        = 0.03    # 3% of initial capital per long order = $300
+ORDER_SIZE_SHORT_PCT  = 0.015   # 1.5% of initial capital per short order = $150 (2x smaller)
+FIRST_STEP      = 0.05    # first averaging after 5% (was 4%)
+SECOND_STEP     = 0.05    # second averaging after another 5% (was 4%)
+SUBSEQ_STEP     = 0.03    # each subsequent averaging every 3% (was 2%)
 TAKE_PROFIT     = 0.03    # TP: 3% above average entry
 MAX_ORDERS      = 10      # maximum grid depth
 LOOKBACK_D1       = 30    # D1 bars for long S/R (support)
@@ -70,13 +71,14 @@ print("      1-second bars ready in cache.")
 
 print("\n[3/3] Running backtest (month by month, no RAM spike)...")
 result = run_sr_grid_backtest_chunked(
-    cache           = _cache,
-    df_d1           = df_d1,
-    symbol          = SYMBOL,
-    start           = start_dt,
-    end             = end_dt,
-    initial_capital = INITIAL_CAP,
-    order_size_pct  = ORDER_SIZE_PCT,
+    cache                = _cache,
+    df_d1                = df_d1,
+    symbol               = SYMBOL,
+    start                = start_dt,
+    end                  = end_dt,
+    initial_capital      = INITIAL_CAP,
+    order_size_pct       = ORDER_SIZE_PCT,
+    order_size_short_pct = ORDER_SIZE_SHORT_PCT,
     first_avg_step  = FIRST_STEP,
     second_avg_step = SECOND_STEP,
     subsequent_step = SUBSEQ_STEP,
