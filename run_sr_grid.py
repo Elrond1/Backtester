@@ -43,7 +43,7 @@ SUBSEQ_STEP     = 0.02    # each subsequent averaging every 2%
 TAKE_PROFIT     = 0.03    # TP: 3% above average entry
 MAX_ORDERS      = 10      # maximum grid depth
 LOOKBACK_D1     = 30      # D1 bars used to compute S/R
-TOLERANCE       = 0.005   # 0.5% price tolerance around S/R for entry
+TOLERANCE       = 0.015   # 1.5% price tolerance around S/R for entry
 MA_PERIOD       = 200     # MA trend filter: above → long only, below → short only
 COMMISSION      = 0.001   # 0.1% per trade side (Binance)
 SLIPPAGE        = 0.0005  # 0.05% price impact
@@ -111,15 +111,30 @@ fig = make_subplots(
 )
 
 # ── Row 1: Equity curve ──
+eq = result.equity
+running_max = eq.cummax()
+drawdown = (eq - running_max) / running_max * 100
+max_dd_val = drawdown.min()
+max_dd_idx = drawdown.idxmin()
+peak_idx   = running_max.loc[:max_dd_idx].idxmax()
+
 fig.add_trace(go.Scatter(
-    x=result.equity.index,
-    y=result.equity.values,
-    mode="lines",
-    name="Equity",
+    x=eq.index, y=eq.values,
+    mode="lines", name="Equity",
     line=dict(color="#00b894", width=2),
-    fill="tozeroy",
-    fillcolor="rgba(0,184,148,0.08)",
+    fill="tozeroy", fillcolor="rgba(0,184,148,0.08)",
 ), row=1, col=1)
+
+# Max drawdown shaded region
+fig.add_vrect(
+    x0=peak_idx, x1=max_dd_idx,
+    fillcolor="rgba(231,76,60,0.12)",
+    layer="below", line_width=0,
+    annotation_text=f"Max DD: {max_dd_val:.1f}%",
+    annotation_position="top left",
+    annotation_font_color="#e74c3c",
+    row=1, col=1,
+)
 
 fig.add_hline(
     y=INITIAL_CAP,
