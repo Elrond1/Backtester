@@ -46,6 +46,7 @@ LOOKBACK_D1       = 30    # D1 bars for long S/R (support)
 LOOKBACK_SHORT_D1 = 7     # D1 bars for short S/R (resistance, shorter = closer to price)
 TOLERANCE         = 0.015 # 1.5% price tolerance around S/R for entry
 MA_PERIOD         = 200   # MA trend filter: above → long only, below → short only
+SHORT_SL          = 0.15  # close SHORT if price rises 15% above avg entry
 COMMISSION      = 0.001   # 0.1% per trade side (Binance)
 SLIPPAGE        = 0.0005  # 0.05% price impact
 
@@ -86,7 +87,8 @@ result = run_sr_grid_backtest_chunked(
     entry_tolerance = TOLERANCE,
     commission      = COMMISSION,
     slippage        = SLIPPAGE,
-    ma_period       = MA_PERIOD,
+    ma_period         = MA_PERIOD,
+    short_stop_loss   = SHORT_SL,
 )
 
 print("\n")

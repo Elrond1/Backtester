@@ -285,6 +285,7 @@ def run_sr_grid_backtest_chunked(
     commission: float = 0.001,
     slippage: float = 0.0005,
     ma_period: int = 200,
+    short_stop_loss: float = 0.15,   # close SHORT if price rises 15% above avg entry
 ) -> SRGridResult:
     """
     Memory-efficient S/R grid backtest: loads 1s bars one month at a time
@@ -424,7 +425,9 @@ def run_sr_grid_backtest_chunked(
 
                 else:           # ── SHORT ──
                     tp_price = avg_cost * (1.0 - take_profit_pct)
-                    if l <= tp_price:
+                    sl_price = avg_cost * (1.0 + short_stop_loss)
+
+                    if l <= tp_price:                          # TP hit
                         exit_price  = tp_price * (1.0 + slippage)
                         proceeds    = total_qty * (avg_cost - exit_price)
                         exit_fee    = total_invested * commission
@@ -432,6 +435,19 @@ def run_sr_grid_backtest_chunked(
                         pnl_usd     = proceeds - exit_fee
                         pnl_pct     = pnl_usd / total_invested * 100.0
                         trades.append(_grid_trade(entry_time_val, times[i], "short",
+                                                   avg_cost, exit_price, n_orders,
+                                                   total_invested, pnl_usd, pnl_pct))
+                        equity_events.append((times[i], round(capital, 2)))
+                        in_grid = False; n_orders = 0; total_qty = 0.0
+                        total_invested = 0.0; entry_time_val = None; side = 0
+                    elif h >= sl_price:                        # SL hit
+                        exit_price  = sl_price * (1.0 + slippage)
+                        proceeds    = total_qty * (avg_cost - exit_price)
+                        exit_fee    = total_invested * commission
+                        capital    += total_invested + proceeds - exit_fee
+                        pnl_usd     = proceeds - exit_fee
+                        pnl_pct     = pnl_usd / total_invested * 100.0
+                        trades.append(_grid_trade(entry_time_val, times[i], "short_sl",
                                                    avg_cost, exit_price, n_orders,
                                                    total_invested, pnl_usd, pnl_pct))
                         equity_events.append((times[i], round(capital, 2)))
