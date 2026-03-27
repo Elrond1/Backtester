@@ -524,6 +524,63 @@ def support_resistance(
     return support, resistance
 
 
+def parabolic_sar(
+    df: pd.DataFrame,
+    start: float = 0.02,
+    increment: float = 0.02,
+    maximum: float = 0.2,
+) -> pd.Series:
+    """
+    Parabolic SAR.
+
+    Returns SAR values aligned with df.index.
+    Value is below price in uptrend, above price in downtrend.
+    """
+    high = df["high"].values
+    low  = df["low"].values
+    n    = len(df)
+
+    sar  = np.full(n, np.nan)
+    bull = True
+    af   = start
+    ep   = low[0]
+    sar[0] = high[0]
+
+    for i in range(1, n):
+        if bull:
+            sar[i] = sar[i - 1] + af * (ep - sar[i - 1])
+            sar[i] = min(sar[i], low[i - 1])
+            if i >= 2:
+                sar[i] = min(sar[i], low[i - 2])
+
+            if low[i] < sar[i]:          # flip to downtrend
+                bull   = False
+                sar[i] = ep
+                ep     = low[i]
+                af     = start
+            else:
+                if high[i] > ep:
+                    ep = high[i]
+                    af = min(af + increment, maximum)
+        else:
+            sar[i] = sar[i - 1] + af * (ep - sar[i - 1])
+            sar[i] = max(sar[i], high[i - 1])
+            if i >= 2:
+                sar[i] = max(sar[i], high[i - 2])
+
+            if high[i] > sar[i]:         # flip to uptrend
+                bull   = True
+                sar[i] = ep
+                ep     = high[i]
+                af     = start
+            else:
+                if low[i] < ep:
+                    ep = low[i]
+                    af = min(af + increment, maximum)
+
+    return pd.Series(sar, index=df.index)
+
+
 def cmf(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """
     Chaikin Money Flow.

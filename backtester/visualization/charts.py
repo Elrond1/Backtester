@@ -41,18 +41,19 @@ def plot_backtest(
     plotly Figure
     """
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        row_heights=[0.55, 0.30, 0.15],
-        vertical_spacing=0.03,
-        subplot_titles=("Price & Trades", "Equity Curve", "Volume"),
+        row_heights=[0.50, 0.22, 0.15, 0.13],
+        vertical_spacing=0.02,
+        subplot_titles=("Price & Trades", "Equity Curve", "Drawdown %", "Volume"),
     )
 
     _add_candlesticks(fig, df, row=1)
     _add_indicators(fig, indicators or {}, row=1)
     _add_trade_markers(fig, result.trades, df, row=1)
     _add_equity_curve(fig, result.equity, df, row=2)
-    _add_volume(fig, df, row=3)
+    _add_drawdown(fig, result.equity, row=3)
+    _add_volume(fig, df, row=4)
 
     display_title = title or f"{result.symbol} {result.timeframe} — {result.params}"
     _style(fig, display_title)
@@ -211,6 +212,67 @@ def _add_equity_curve(fig: go.Figure, equity: pd.Series, df: pd.DataFrame, row: 
         row=row, col=1,
     )
 
+    # Annotate final return on the equity curve
+    final   = equity.iloc[-1]
+    ret_pct = (final / initial - 1) * 100
+    ret_color = "#26a69a" if ret_pct >= 0 else "#ef5350"
+    yref = "y" if row == 1 else f"y{row}"
+    xref = "x" if row == 1 else f"x{row}"
+    fig.add_annotation(
+        x=equity.index[-1],
+        y=final,
+        text=f"Return: {ret_pct:+.1f}%",
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor=ret_color,
+        font=dict(size=11, color=ret_color),
+        bgcolor="rgba(30,30,40,0.8)",
+        bordercolor=ret_color,
+        borderwidth=1,
+        xanchor="right",
+        xref=xref,
+        yref=yref,
+    )
+
+
+def _add_drawdown(fig: go.Figure, equity: pd.Series, row: int):
+    rolling_max = equity.cummax()
+    drawdown    = (equity - rolling_max) / rolling_max * 100
+
+    fig.add_trace(
+        go.Scatter(
+            x=drawdown.index,
+            y=drawdown.values,
+            mode="lines",
+            name="Drawdown",
+            line=dict(color="#ef5350", width=1),
+            fill="tozeroy",
+            fillcolor="rgba(239,83,80,0.20)",
+            showlegend=False,
+        ),
+        row=row, col=1,
+    )
+
+    # Mark the max drawdown point
+    min_idx = drawdown.idxmin()
+    min_val = drawdown.min()
+    yref = "y" if row == 1 else f"y{row}"
+    xref = "x" if row == 1 else f"x{row}"
+    fig.add_annotation(
+        x=min_idx,
+        y=min_val,
+        text=f"Max DD: {min_val:.2f}%",
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor="#ef5350",
+        font=dict(size=11, color="#ef5350"),
+        bgcolor="rgba(30,30,40,0.8)",
+        bordercolor="#ef5350",
+        borderwidth=1,
+        xref=xref,
+        yref=yref,
+    )
+
 
 def _add_volume(fig: go.Figure, df: pd.DataFrame, row: int):
     colors = [
@@ -266,7 +328,7 @@ def _style(fig: go.Figure, title: str):
     fig.update_layout(
         title=dict(text=title, font=dict(size=16)),
         template="plotly_dark",
-        height=900,
+        height=1050,
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
         xaxis_rangeslider_visible=False,
         margin=dict(l=60, r=20, t=60, b=20),
@@ -274,4 +336,5 @@ def _style(fig: go.Figure, title: str):
     )
     fig.update_yaxes(row=1, col=1, title_text="Price")
     fig.update_yaxes(row=2, col=1, title_text="Capital")
-    fig.update_yaxes(row=3, col=1, title_text="Volume")
+    fig.update_yaxes(row=3, col=1, title_text="DD %")
+    fig.update_yaxes(row=4, col=1, title_text="Volume")

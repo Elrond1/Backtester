@@ -1,0 +1,13 @@
+# Polymarket Bot dependencies
+
+# WebSocket для Binance feed
+websockets>=12.0
+
+# Polymarket CLOB API
+py-clob-client>=0.18.0
+
+# HTTP клиент (async)
+aiohttp>=3.9.0
+
+# .env файл
+python-dotenv>=1.0.0

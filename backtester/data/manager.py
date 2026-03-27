@@ -16,8 +16,15 @@ import pandas as pd
 from backtester.data.cache import DataCache
 from backtester.data.downloader import BinanceVisionDownloader, CCXTDownloader
 
-_cache = DataCache()
+_cache: "DataCache | None" = None
 _vision = BinanceVisionDownloader()
+
+
+def _get_cache() -> "DataCache":
+    global _cache
+    if _cache is None:
+        _cache = DataCache()
+    return _cache
 
 # Directory for 1s Parquet files
 _TICKS_DIR = Path.home() / ".backtester" / "ticks"
@@ -59,7 +66,7 @@ def get_ohlcv(
     pd.DataFrame with DatetimeIndex (UTC) and columns:
     open, high, low, close, volume [, quote_volume, trades]
     """
-    cache = _cache if db_path is None else DataCache(db_path)
+    cache = _get_cache() if db_path is None else DataCache(db_path)
 
     start = _parse_dt(since)
     end = _parse_dt(until) if until else datetime.now(tz=timezone.utc)
@@ -98,6 +105,50 @@ def _1s_parquet_path(symbol: str, year: int, month: int) -> Path:
     """Path to the Parquet file for one month of 1s bars."""
     safe = symbol.replace("/", "").upper()
     return _TICKS_DIR / safe / f"{year:04d}-{month:02d}.parquet"
+
+
+def _d1_parquet_path(symbol: str) -> Path:
+    """Path to the Parquet file for D1 bars."""
+    safe = symbol.replace("/", "").upper()
+    return _TICKS_DIR / safe / "d1.parquet"
+
+
+def get_d1_bars(
+    symbol: str,
+    since: Union[str, datetime] = "2019-01-01",
+    until: Union[str, datetime, None] = None,
+    exchange: str = "binance",
+) -> pd.DataFrame:
+    """
+    Download and cache D1 bars as Parquet (no DuckDB lock needed).
+    Multiple processes can read simultaneously.
+    """
+    start = _parse_dt(since)
+    end   = _parse_dt(until) if until else datetime.now(tz=timezone.utc)
+
+    path  = _d1_parquet_path(symbol)
+    needs_download = True
+
+    if path.exists():
+        cached = pd.read_parquet(path)
+        if not cached.empty:
+            cached_min = cached.index.min()
+            cached_max = cached.index.max()
+            if pd.Timestamp(start) >= cached_min and pd.Timestamp(end) <= cached_max + timedelta(days=2):
+                needs_download = False
+
+    if needs_download:
+        df = _vision.fetch_klines(symbol, "1d", start, end)
+        if not df.empty:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(path)
+        cached = df
+
+    if cached.empty:
+        return cached
+    ts_start = pd.Timestamp(start).tz_localize("UTC") if start.tzinfo is None else pd.Timestamp(start)
+    ts_end   = pd.Timestamp(end).tz_localize("UTC")   if end.tzinfo is None   else pd.Timestamp(end)
+    return cached.loc[ts_start:ts_end]
 
 
 def _fetch_1s_incremental(
@@ -176,7 +227,7 @@ def get_liquidations(
     """
     from backtester.data.coinalyze import CoinalyzeDownloader
 
-    cache = _cache if db_path is None else DataCache(db_path)
+    cache = _get_cache() if db_path is None else DataCache(db_path)
 
     start = _parse_dt(since)
     end = _parse_dt(until) if until else datetime.now(tz=timezone.utc)
@@ -248,7 +299,7 @@ def get_aggtrades(
     if exchange.lower() != "binance":
         raise ValueError("aggTrades download is only supported for Binance.")
 
-    cache = _cache if db_path is None else DataCache(db_path)
+    cache = _get_cache() if db_path is None else DataCache(db_path)
 
     start = _parse_dt(since)
     end = _parse_dt(until) if until else datetime.now(tz=timezone.utc)

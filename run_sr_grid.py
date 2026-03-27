@@ -27,7 +27,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from backtester.data.manager import get_ohlcv, _cache, _parse_dt, _fetch_1s_incremental
+from backtester.data.manager import get_d1_bars, _parse_dt, _fetch_1s_incremental
 from backtester.engine.sr_grid_engine import run_sr_grid_backtest_chunked
 
 # ── Strategy parameters ────────────────────────────────────────────────────────
@@ -58,20 +58,20 @@ print("  S/R Grid Backtest — BTC/USDT (2020 to today)")
 print("=" * 58)
 
 print("\n[1/3] Loading D1 bars (extra year for S/R lookback)...")
-df_d1 = get_ohlcv(SYMBOL, "1d", since="2019-01-01")
+df_d1 = get_d1_bars(SYMBOL, since="2019-01-01")
 print(f"      {len(df_d1):,} daily bars  ({df_d1.index[0].date()} → {df_d1.index[-1].date()})")
 
 print("\n[2/3] Downloading 1-second bars (first run: ~15 min, then instant)...")
 start_dt = _parse_dt(START_DATE)
 end_dt   = datetime.now(timezone.utc)
-_fetch_1s_incremental(_cache, SYMBOL, start_dt, end_dt)
+_fetch_1s_incremental(None, SYMBOL, start_dt, end_dt)
 print("      1-second bars ready in cache.")
 
 # ── Run backtest ───────────────────────────────────────────────────────────────
 
 print("\n[3/3] Running backtest (month by month, no RAM spike)...")
 result = run_sr_grid_backtest_chunked(
-    cache                = _cache,
+    cache                = None,
     df_d1                = df_d1,
     symbol               = SYMBOL,
     start                = start_dt,
