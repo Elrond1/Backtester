@@ -20,7 +20,7 @@ from . import config
 from .candles import BinanceFeed, Candle
 from .executor import Executor
 from .markets import MarketFinder
-from .signals import Signal, check_signal
+from .signals import Signal, check_signal, check_dc_signal
 from .state import BotState
 
 log = logging.getLogger(__name__)
@@ -43,17 +43,32 @@ class Bot:
         """Вызывается Binance feed при каждой закрытой 15m свече."""
         buf = self._feed.get_buffer(candle.symbol)
 
+        # ── S2 сигнал (HH:15) ─────────────────────────────────────────────────
         signal = check_signal(
             candle=candle,
             buf=buf,
             prev_b_win=self._state.get_prev_b_win(candle.symbol),
             prev_d_win=self._state.get_prev_d_win(candle.symbol),
         )
-
-        if signal is None:
+        if signal is not None:
+            # Запоминаем для DC: S2 сработал в этом часу
+            self._state.set_dc_pending(
+                pair=candle.symbol,
+                hour_iso=signal.hour_start.isoformat(),
+                direction=signal.direction,
+            )
+            await self._handle_signal(signal)
             return
 
-        await self._handle_signal(signal)
+        # ── DC сигнал (HH:30) ─────────────────────────────────────────────────
+        dc_signal = check_dc_signal(
+            candle=candle,
+            buf=buf,
+            pending_direction=self._state.get_dc_pending_direction(candle.symbol),
+        )
+        if dc_signal is not None:
+            self._state.clear_dc_pending(candle.symbol)
+            await self._handle_dc_signal(dc_signal)
 
     # ── signal handler ────────────────────────────────────────────────────────
 
@@ -112,6 +127,52 @@ class Bot:
                 f"[{signal.symbol.upper()}] ORDER FAILED: {result.error}"
             )
 
+    # ── DC signal handler (пирамидинг) ────────────────────────────────────────
+
+    async def _handle_dc_signal(self, signal: Signal):
+        level   = self._state.get_dc_pyramid_level(signal.symbol)
+        base    = config.DC_BASE_BETS[signal.symbol]
+        bet_usd = base * config.DC_PYRAMID_MULTIPLIERS[level]
+        keyword = config.PAIRS[signal.symbol]["poly_slug"]
+
+        log.info(
+            f"[{signal.symbol.upper()}] {'='*50}\n"
+            f"  Signal:    DC (двойное подтверждение)\n"
+            f"  Направление: {signal.direction}\n"
+            f"  Пирамида:  уровень {level} → ставка ${bet_usd}\n"
+            f"  Hour:      {signal.hour_start.strftime('%H:%M UTC')}\n"
+            f"  {'='*50}"
+        )
+
+        market = await self._finder.find(keyword, signal.hour_start)
+        if market is None:
+            log.error(f"[{signal.symbol.upper()}] DC: Market not found — SKIP")
+            return
+
+        token_id = market.yes_token_id if signal.direction == "YES" else market.no_token_id
+        price = await self._exec.get_book_price(token_id)
+
+        if price > config.MAX_ENTRY_PRICE:
+            log.warning(
+                f"[{signal.symbol.upper()}] DC: Price too high: {price:.2f}¢ — SKIP"
+            )
+            return
+
+        result = await self._exec.place(signal, market, bet_usd)
+
+        if result.success:
+            log.info(
+                f"[{signal.symbol.upper()}] DC ORDER PLACED ✓ "
+                f"id={result.order_id} "
+                f"filled=${result.filled:.0f} @ {result.avg_price:.2f}¢ "
+                f"(уровень пирамиды {level})"
+            )
+            asyncio.create_task(
+                self._schedule_dc_resolution(signal, market, level)
+            )
+        else:
+            log.error(f"[{signal.symbol.upper()}] DC ORDER FAILED: {result.error}")
+
     # ── resolution check ──────────────────────────────────────────────────────
 
     async def _schedule_resolution_check(self, signal: Signal, market):
@@ -147,6 +208,32 @@ class Bot:
             self._state.set_prev_b_win(signal.symbol, win)
         else:  # D, D_C
             self._state.set_prev_d_win(signal.symbol, win)
+
+    async def _schedule_dc_resolution(self, signal: Signal, market, level: int):
+        """Ждём результата DC сделки и обновляем уровень пирамиды."""
+        now = datetime.now(tz=timezone.utc)
+        wait_sec = (market.end_date - now).total_seconds() + 30
+        if wait_sec > 0:
+            await asyncio.sleep(wait_sec)
+
+        win = await self._check_resolution(market)
+        if win is None:
+            log.warning(f"[{signal.symbol.upper()}] DC: Не удалось определить результат")
+            return
+
+        outcome = "WIN ✓" if win else "LOSS ✗"
+        base    = config.DC_BASE_BETS[signal.symbol]
+        bet_usd = base * config.DC_PYRAMID_MULTIPLIERS[level]
+        pnl     = bet_usd * (1 / market.last_price - 1) if win else -bet_usd
+
+        self._state.update_dc_pyramid(signal.symbol, win)
+        new_level = self._state.get_dc_pyramid_level(signal.symbol)
+
+        log.info(
+            f"[{signal.symbol.upper()}] DC → {outcome}  "
+            f"PnL: {pnl:+.2f}$  "
+            f"Следующий уровень пирамиды: {new_level}"
+        )
 
     async def _check_resolution(self, market) -> bool | None:
         """
