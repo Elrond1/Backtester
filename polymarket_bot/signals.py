@@ -31,11 +31,12 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Signal:
-    symbol:    str        # "btcusdt"
-    sig_type:  str        # "B" | "C" | "D" | "D_C"
-    direction: str        # "YES" (лонг) | "NO" (шорт)
-    timestamp: datetime   # время сигнала (HH:15)
-    hour_start: datetime  # начало часа (HH:00) — время resolution контракта
+    symbol:     str        # "btcusdt"
+    sig_type:   str        # "B" | "C" | "D" | "D_C" | "DC"
+    direction:  str        # "YES" (лонг) | "NO" (шорт)
+    timestamp:  datetime   # время сигнала (HH:15 или HH:30 для DC)
+    hour_start: datetime   # начало часа (HH:00) — время resolution контракта
+    streak_len: int = 0    # длина стрика: 5 для B/C, 3 для D/D_C, 2 для DC
 
 
 def _is_hour_start_candle(c: Candle) -> bool:
@@ -103,6 +104,7 @@ def check_signal(
                 direction=direction,
                 timestamp=c0.open_dt.replace(minute=15),   # HH:15
                 hour_start=c0.open_dt,                      # HH:00
+                streak_len=5,
             )
 
     # ── D / D_C: 3-стрик (closed[-4..-2]) ────────────────────────────────────
@@ -126,6 +128,7 @@ def check_signal(
                 direction=direction,
                 timestamp=c0.open_dt.replace(minute=15),
                 hour_start=c0.open_dt,
+                streak_len=3,
             )
 
     return None
@@ -171,4 +174,5 @@ def check_dc_signal(
         direction=dc_direction,
         timestamp=candle.open_dt.replace(minute=30),
         hour_start=hour_start,
+        streak_len=2,
     )

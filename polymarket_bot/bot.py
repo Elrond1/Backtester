@@ -122,10 +122,12 @@ class Bot:
             log_open(
                 pair=signal.symbol,
                 signal=signal.sig_type,
+                streak_len=signal.streak_len,
                 direction=signal.direction,
                 bet_usd=bet_usd,
                 entry_price=result.avg_price,
                 order_id=result.order_id,
+                condition_id=market.condition_id,
                 dry_run=config.DRY_RUN,
             )
             asyncio.create_task(
@@ -179,11 +181,14 @@ class Bot:
             log_open(
                 pair=signal.symbol,
                 signal="DC",
+                streak_len=signal.streak_len,
                 direction=signal.direction,
                 bet_usd=bet_usd,
                 entry_price=result.avg_price,
                 order_id=result.order_id,
+                condition_id=market.condition_id,
                 dry_run=config.DRY_RUN,
+                dc_level=level,
             )
             asyncio.create_task(
                 self._schedule_dc_resolution(signal, market, level, result.order_id, result.avg_price)
@@ -308,4 +313,5 @@ class Bot:
         if config.DRY_RUN:
             log.info("*** DRY RUN MODE — ордера не размещаются ***")
 
+        print_summary()
         await self._feed.run()

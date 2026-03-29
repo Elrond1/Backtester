@@ -3,7 +3,7 @@
 
 После каждой недели можно открыть trades.csv и проанализировать:
 - Реальная средняя цена входа
-- WR по парам и сигналам
+- WR по парам, сигналам, длине стрика, уровням пирамиды
 - P&L в деньгах
 - Сравнение с бэктестом
 """
@@ -18,15 +18,19 @@ log = logging.getLogger(__name__)
 JOURNAL_FILE = "trades.csv"
 
 COLUMNS = [
-    "datetime",        # время открытия сделки (UTC)
+    "open_datetime",   # время открытия сделки (UTC)
+    "close_datetime",  # время резолюции (UTC)
     "pair",            # btcusdt / dogeusdt / bnbusdt
     "signal",          # B / C / D / D_C / DC
+    "streak_len",      # длина стрика (5 / 3 / 2)
+    "dc_level",        # уровень пирамиды для DC (1/2/3), пусто для S2
     "direction",       # YES / NO
     "bet_usd",         # размер ставки $
     "entry_price",     # реальная цена входа (¢)
     "potential_win",   # потенциальный выигрыш $
     "order_id",        # ID ордера на Polymarket
-    "result",          # WIN / LOSS / UNKNOWN
+    "condition_id",    # ID рынка на Polymarket (для верификации)
+    "result",          # WIN / LOSS / OPEN
     "pnl",             # фактический P&L $
     "dry_run",         # True / False
 ]
@@ -44,37 +48,44 @@ def _ensure_header():
 def log_open(
     pair: str,
     signal: str,
+    streak_len: int,
     direction: str,
     bet_usd: float,
     entry_price: float,
     order_id: str,
+    condition_id: str,
     dry_run: bool,
-) -> dict:
-    """
-    Записываем открытие сделки. Возвращает словарь для последующего обновления результата.
-    """
+    dc_level: int = 0,
+) -> None:
+    """Записываем открытие сделки в CSV."""
     _ensure_header()
 
     row = {
-        "datetime":      datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-        "pair":          pair,
-        "signal":        signal,
-        "direction":     direction,
-        "bet_usd":       bet_usd,
-        "entry_price":   round(entry_price, 4),
-        "potential_win": round(bet_usd * (1 / entry_price - 1), 2) if entry_price > 0 else 0,
-        "order_id":      order_id,
-        "result":        "OPEN",
-        "pnl":           "",
-        "dry_run":       dry_run,
+        "open_datetime":  datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "close_datetime": "",
+        "pair":           pair,
+        "signal":         signal,
+        "streak_len":     streak_len,
+        "dc_level":       dc_level if dc_level > 0 else "",
+        "direction":      direction,
+        "bet_usd":        bet_usd,
+        "entry_price":    round(entry_price, 4),
+        "potential_win":  round(bet_usd * (1 / entry_price - 1), 2) if entry_price > 0 else 0,
+        "order_id":       order_id,
+        "condition_id":   condition_id,
+        "result":         "OPEN",
+        "pnl":            "",
+        "dry_run":        dry_run,
     }
 
     with open(JOURNAL_FILE, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writerow(row)
 
-    log.info(f"[ЖУРНАЛ] Открыта: {pair} {signal} {direction} ${bet_usd} @ {entry_price:.2f}¢")
-    return row
+    log.info(
+        f"[ЖУРНАЛ] Открыта: {pair} {signal}(streak={streak_len}) "
+        f"{direction} ${bet_usd} @ {entry_price:.2f}¢"
+    )
 
 
 def log_result(
@@ -82,22 +93,21 @@ def log_result(
     win: bool,
     entry_price: float,
     bet_usd: float,
-):
-    """
-    Обновляем результат сделки по order_id.
-    Читаем все строки, находим нужную, обновляем result и pnl.
-    """
+) -> None:
+    """Обновляем результат сделки по order_id."""
     if not os.path.exists(JOURNAL_FILE):
         return
 
     rows = []
     updated = False
+    close_dt = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     with open(JOURNAL_FILE, "r", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row["order_id"] == order_id and row["result"] == "OPEN":
-                row["result"] = "WIN" if win else "LOSS"
+                row["result"]         = "WIN" if win else "LOSS"
+                row["close_datetime"] = close_dt
                 pnl = bet_usd * (1 / entry_price - 1) if win else -bet_usd
                 row["pnl"] = round(pnl, 2)
                 updated = True
@@ -113,31 +123,45 @@ def log_result(
         log.info(f"[ЖУРНАЛ] Результат: {order_id} → {result_str} {pnl:+.2f}$")
 
 
-def print_summary():
-    """Выводит краткую статистику по журналу в лог."""
+def print_summary() -> None:
+    """Выводит статистику по журналу в лог."""
     if not os.path.exists(JOURNAL_FILE):
-        log.info("Журнал пустой — сделок ещё не было.")
+        log.info("[ЖУРНАЛ] Файл пустой — сделок ещё не было.")
         return
 
-    rows = []
     with open(JOURNAL_FILE, "r", newline="") as f:
         reader = csv.DictReader(f)
         rows = [r for r in reader if r["result"] in ("WIN", "LOSS")]
 
     if not rows:
-        log.info("Нет завершённых сделок.")
+        log.info("[ЖУРНАЛ] Нет завершённых сделок.")
         return
 
     total = len(rows)
-    wins = sum(1 for r in rows if r["result"] == "WIN")
-    wr = wins / total * 100
-    pnl = sum(float(r["pnl"]) for r in rows if r["pnl"])
+    wins  = sum(1 for r in rows if r["result"] == "WIN")
+    wr    = wins / total * 100
+    pnl   = sum(float(r["pnl"]) for r in rows if r["pnl"])
     prices = [float(r["entry_price"]) for r in rows if r["entry_price"]]
     avg_price = sum(prices) / len(prices) if prices else 0
 
     log.info(
-        f"[ЖУРНАЛ] Итого: {total} сделок | "
-        f"WR: {wr:.1f}% | "
-        f"P&L: {pnl:+.2f}$ | "
-        f"Ср. цена входа: {avg_price:.2f}¢"
+        f"[ЖУРНАЛ] ── Статистика ──────────────────────────\n"
+        f"  Всего сделок:  {total}\n"
+        f"  Win Rate:      {wr:.1f}%\n"
+        f"  P&L итого:     {pnl:+.2f}$\n"
+        f"  Ср. цена входа:{avg_price:.2f}¢\n"
+        f"  ────────────────────────────────────────────────"
     )
+
+    # Разбивка по сигналам
+    for sig in ("B", "C", "D", "D_C", "DC"):
+        sig_rows = [r for r in rows if r["signal"] == sig]
+        if not sig_rows:
+            continue
+        s_wins = sum(1 for r in sig_rows if r["result"] == "WIN")
+        s_wr   = s_wins / len(sig_rows) * 100
+        s_pnl  = sum(float(r["pnl"]) for r in sig_rows if r["pnl"])
+        log.info(
+            f"[ЖУРНАЛ]   {sig:4s}: {len(sig_rows):3d} сделок  "
+            f"WR {s_wr:.1f}%  P&L {s_pnl:+.2f}$"
+        )
