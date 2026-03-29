@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from . import config
 from .candles import BinanceFeed, Candle
 from .executor import Executor
+from .journal import log_open, log_result, print_summary
 from .markets import MarketFinder
 from .signals import Signal, check_signal, check_dc_signal
 from .state import BotState
@@ -117,10 +118,18 @@ class Bot:
                 f"id={result.order_id} "
                 f"filled=${result.filled:.0f} @ {result.avg_price:.2f}¢"
             )
-            # Состояние обновляем при размещении (win узнаем при резолюции)
-            # Для win state нам нужна информация при резолюции — планируем задачу
+            # Записываем в журнал
+            log_open(
+                pair=signal.symbol,
+                signal=signal.sig_type,
+                direction=signal.direction,
+                bet_usd=bet_usd,
+                entry_price=result.avg_price,
+                order_id=result.order_id,
+                dry_run=config.DRY_RUN,
+            )
             asyncio.create_task(
-                self._schedule_resolution_check(signal, market)
+                self._schedule_resolution_check(signal, market, result.order_id, result.avg_price, bet_usd)
             )
         else:
             log.error(
@@ -167,15 +176,31 @@ class Bot:
                 f"filled=${result.filled:.0f} @ {result.avg_price:.2f}¢ "
                 f"(уровень пирамиды {level})"
             )
+            log_open(
+                pair=signal.symbol,
+                signal="DC",
+                direction=signal.direction,
+                bet_usd=bet_usd,
+                entry_price=result.avg_price,
+                order_id=result.order_id,
+                dry_run=config.DRY_RUN,
+            )
             asyncio.create_task(
-                self._schedule_dc_resolution(signal, market, level)
+                self._schedule_dc_resolution(signal, market, level, result.order_id, result.avg_price)
             )
         else:
             log.error(f"[{signal.symbol.upper()}] DC ORDER FAILED: {result.error}")
 
     # ── resolution check ──────────────────────────────────────────────────────
 
-    async def _schedule_resolution_check(self, signal: Signal, market):
+    async def _schedule_resolution_check(
+        self,
+        signal: Signal,
+        market,
+        order_id: str,
+        entry_price: float,
+        bet_usd: float,
+    ):
         """
         Ждём до конца часа и проверяем результат.
         Win = направление верное (YES выиграл если цена выросла).
@@ -204,12 +229,21 @@ class Bot:
         outcome = "WIN ✓" if win else "LOSS ✗"
         log.info(f"[{signal.symbol.upper()}] {signal.sig_type} → {outcome}")
 
+        log_result(order_id, win, entry_price, bet_usd)
+
         if signal.sig_type in ("B", "C"):
             self._state.set_prev_b_win(signal.symbol, win)
         else:  # D, D_C
             self._state.set_prev_d_win(signal.symbol, win)
 
-    async def _schedule_dc_resolution(self, signal: Signal, market, level: int):
+    async def _schedule_dc_resolution(
+        self,
+        signal: Signal,
+        market,
+        level: int,
+        order_id: str,
+        entry_price: float,
+    ):
         """Ждём результата DC сделки и обновляем уровень пирамиды."""
         now = datetime.now(tz=timezone.utc)
         wait_sec = (market.end_date - now).total_seconds() + 30
@@ -224,7 +258,9 @@ class Bot:
         outcome = "WIN ✓" if win else "LOSS ✗"
         base    = config.DC_BASE_BETS[signal.symbol]
         bet_usd = base * config.DC_PYRAMID_MULTIPLIERS[level]
-        pnl     = bet_usd * (1 / market.last_price - 1) if win else -bet_usd
+        pnl     = bet_usd * (1 / entry_price - 1) if win else -bet_usd
+
+        log_result(order_id, win, entry_price, bet_usd)
 
         self._state.update_dc_pyramid(signal.symbol, win)
         new_level = self._state.get_dc_pyramid_level(signal.symbol)
