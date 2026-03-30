@@ -105,5 +105,5 @@ LOG_LEVEL     = "INFO"
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
 # ── Telegram уведомления ──────────────────────────────────────────────────────
-TG_TOKEN   = os.getenv("TG_TOKEN", "")    # токен от BotFather
-TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # твой chat_id
+TG_TOKEN   = os.getenv("TG_TOKEN", "")              # токен от BotFather
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "-1001093356102")  # канал "Спекулянт"
