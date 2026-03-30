@@ -23,6 +23,7 @@ from .journal import log_open, log_result, print_summary
 from .markets import MarketFinder
 from .signals import Signal, check_signal, check_dc_signal
 from .state import BotState
+from .telegram_notify import send, fmt_open, fmt_result, fmt_error
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +119,10 @@ class Bot:
                 f"id={result.order_id} "
                 f"filled=${result.filled:.0f} @ {result.avg_price:.2f}¢"
             )
+            asyncio.create_task(send(
+                config.TG_TOKEN, config.TG_CHAT_ID,
+                fmt_open(signal.symbol, signal.sig_type, signal.direction, bet_usd, result.avg_price, config.DRY_RUN),
+            ))
             # Записываем в журнал
             log_open(
                 pair=signal.symbol,
@@ -178,6 +183,10 @@ class Bot:
                 f"filled=${result.filled:.0f} @ {result.avg_price:.2f}¢ "
                 f"(уровень пирамиды {level})"
             )
+            asyncio.create_task(send(
+                config.TG_TOKEN, config.TG_CHAT_ID,
+                fmt_open(signal.symbol, f"DC[{level}]", signal.direction, bet_usd, result.avg_price, config.DRY_RUN),
+            ))
             log_open(
                 pair=signal.symbol,
                 signal="DC",
@@ -234,6 +243,11 @@ class Bot:
         outcome = "WIN ✓" if win else "LOSS ✗"
         log.info(f"[{signal.symbol.upper()}] {signal.sig_type} → {outcome}")
 
+        pnl = bet_usd * (1 / entry_price - 1) if win else -bet_usd
+        asyncio.create_task(send(
+            config.TG_TOKEN, config.TG_CHAT_ID,
+            fmt_result(signal.symbol, signal.sig_type, win, pnl, config.DRY_RUN),
+        ))
         log_result(order_id, win, entry_price, bet_usd)
 
         if signal.sig_type in ("B", "C"):
@@ -265,6 +279,10 @@ class Bot:
         bet_usd = base * config.DC_PYRAMID_MULTIPLIERS[level]
         pnl     = bet_usd * (1 / entry_price - 1) if win else -bet_usd
 
+        asyncio.create_task(send(
+            config.TG_TOKEN, config.TG_CHAT_ID,
+            fmt_result(signal.symbol, f"DC[{level}]", win, pnl, config.DRY_RUN),
+        ))
         log_result(order_id, win, entry_price, bet_usd)
 
         self._state.update_dc_pyramid(signal.symbol, win)

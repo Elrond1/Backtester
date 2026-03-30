@@ -103,3 +103,7 @@ LOG_LEVEL     = "INFO"
 
 # ── Dry run (не ставит реальные ордера) ──────────────────────────────────────
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+
+# ── Telegram уведомления ──────────────────────────────────────────────────────
+TG_TOKEN   = os.getenv("TG_TOKEN", "")    # токен от BotFather
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # твой chat_id
