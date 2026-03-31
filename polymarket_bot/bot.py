@@ -2,19 +2,23 @@
 Главный оркестратор бота.
 
 Поток:
-  1. Binance WS → 15m свечи по BTC/DOGE/BNB
+  1. Binance WS → 15m свечи по BTC/ETH/SOL
   2. При закрытии ПЕРВОЙ 15m свечи нового часа (HH:15):
      - Проверяем сигнал B/C/D/D_C
+     - Определяем множитель ставки: x2 если сигнал совпадает с направлением вчерашнего дня
      - Ищем рынок на Polymarket
      - Проверяем цену входа (≤ MAX_ENTRY_PRICE)
      - Размещаем ордер
      - Обновляем состояние
+  3. При закрытии ВТОРОЙ 15m свечи (HH:30):
+     - Проверяем DC сигнал (двойное подтверждение)
 """
 
 import asyncio
 import logging
-import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+import aiohttp
 
 from . import config
 from .candles import BinanceFeed, Candle
@@ -38,16 +42,67 @@ class Bot:
             symbols=self._symbols,
             on_candle_close=self._on_candle,
         )
-        # Сбор сигналов по часу для triple-confirm логики
-        # {hour_iso: [Signal, ...]}
-        self._pending_hour_signals: dict[str, list] = {}
-        self._pending_hour_tasks:   dict[str, bool]  = {}
+        # Направление предыдущего дня: {symbol: True=вверх, False=вниз, None=неизвестно}
+        self._prev_day_up: dict[str, bool | None] = {s: None for s in self._symbols}
+        # Открытие текущего дня: {symbol: float}
+        self._day_open: dict[str, float | None] = {s: None for s in self._symbols}
+
+    # ── инициализация дневного тренда ─────────────────────────────────────────
+
+    async def _init_daily_trend(self):
+        """Загружаем вчерашнюю дневную свечу для каждой пары при старте."""
+        for symbol in self._symbols:
+            try:
+                pair = symbol.upper().replace("USDT", "") + "USDT"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://api.binance.com/api/v3/klines",
+                        params={"symbol": pair, "interval": "1d", "limit": 2},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        data = await resp.json()
+
+                if len(data) >= 2:
+                    prev = data[-2]   # вчерашняя закрытая свеча
+                    prev_open  = float(prev[1])
+                    prev_close = float(prev[4])
+                    self._prev_day_up[symbol] = prev_close > prev_open
+
+                    today = data[-1]  # сегодняшняя (ещё не закрыта)
+                    self._day_open[symbol] = float(today[1])
+
+                    direction = "▲" if self._prev_day_up[symbol] else "▼"
+                    log.info(f"[{symbol.upper()}] Вчерашний день: {direction}  "
+                             f"(open={prev_open:.2f} close={prev_close:.2f})")
+            except Exception as e:
+                log.warning(f"[{symbol.upper()}] Не удалось загрузить дневной тренд: {e}")
+
+    def _get_trend_multiplier(self, symbol: str, direction: str) -> int:
+        """
+        Возвращает множитель ставки на основе тренда предыдущего дня.
+        x2 если сигнал совпадает с направлением вчерашнего дня.
+        x1 если против тренда или тренд неизвестен.
+        """
+        prev_up = self._prev_day_up.get(symbol)
+        if prev_up is None:
+            return 1
+        signal_up = (direction == "YES")
+        return config.TREND_MULTIPLIER if (signal_up == prev_up) else 1
 
     # ── candle handler ────────────────────────────────────────────────────────
 
     async def _on_candle(self, candle: Candle):
         """Вызывается Binance feed при каждой закрытой 15m свече."""
         buf = self._feed.get_buffer(candle.symbol)
+
+        # Обновляем дневной тренд при начале нового дня (00:00 UTC)
+        if candle.open_dt.hour == 0 and candle.open_dt.minute == 0:
+            prev_open = self._day_open.get(candle.symbol)
+            if prev_open is not None:
+                self._prev_day_up[candle.symbol] = candle.open > prev_open
+                direction = "▲" if self._prev_day_up[candle.symbol] else "▼"
+                log.info(f"[{candle.symbol.upper()}] Новый день. Вчера: {direction}")
+            self._day_open[candle.symbol] = candle.open
 
         # ── S2 сигнал (HH:15) ─────────────────────────────────────────────────
         signal = check_signal(
@@ -57,22 +112,12 @@ class Bot:
             prev_d_win=self._state.get_prev_d_win(candle.symbol),
         )
         if signal is not None:
-            # Запоминаем для DC: S2 сработал в этом часу
             self._state.set_dc_pending(
                 pair=candle.symbol,
                 hour_iso=signal.hour_start.isoformat(),
                 direction=signal.direction,
             )
-            # Собираем сигналы часа для triple-confirm логики
-            hour_key = signal.hour_start.isoformat()
-            if hour_key not in self._pending_hour_signals:
-                self._pending_hour_signals[hour_key] = []
-            self._pending_hour_signals[hour_key].append(signal)
-
-            # Запускаем обработку через TRIPLE_CONFIRM_WAIT_SEC (один раз на час)
-            if hour_key not in self._pending_hour_tasks:
-                self._pending_hour_tasks[hour_key] = True
-                asyncio.create_task(self._process_hour_signals(hour_key))
+            await self._handle_signal(signal)
             return
 
         # ── DC сигнал (HH:30) ─────────────────────────────────────────────────
@@ -85,56 +130,23 @@ class Bot:
             self._state.clear_dc_pending(candle.symbol)
             await self._handle_dc_signal(dc_signal)
 
-    # ── triple-confirm обработка ──────────────────────────────────────────────
-
-    async def _process_hour_signals(self, hour_key: str):
-        """
-        Ждём TRIPLE_CONFIRM_WAIT_SEC секунд чтобы собрать сигналы от всех пар.
-        Если все пары дают одно направление → ставка × TRIPLE_CONFIRM_MULTIPLIER.
-        """
-        await asyncio.sleep(config.TRIPLE_CONFIRM_WAIT_SEC)
-
-        signals = self._pending_hour_signals.pop(hour_key, [])
-        self._pending_hour_tasks.pop(hour_key, None)
-
-        if not signals:
-            return
-
-        # Проверяем: все сигналы одного направления?
-        directions = [s.direction for s in signals]
-        all_same   = len(set(directions)) == 1
-        multiplier = config.TRIPLE_CONFIRM_MULTIPLIER if (len(signals) == 3 and all_same) else 1
-
-        if len(signals) == 3 and all_same:
-            log.info(
-                f"[TRIPLE] Все 3 пары → {directions[0]}  "
-                f"Ставки ×{multiplier}  WR ожидается ~71.9%"
-            )
-            asyncio.create_task(send(
-                config.TG_TOKEN, config.TG_CHAT_ID,
-                f"🔥 <b>TRIPLE CONFIRM</b> — все 3 пары {directions[0]}\n"
-                f"Ставки удвоены ×{multiplier}"
-            ))
-
-        for signal in signals:
-            await self._handle_signal(signal, bet_multiplier=multiplier)
-
     # ── signal handler ────────────────────────────────────────────────────────
 
-    async def _handle_signal(self, signal: Signal, bet_multiplier: int = 1):
-        pair_cfg = config.PAIRS[signal.symbol]
-        bet_usd  = pair_cfg["bets"][signal.sig_type] * bet_multiplier
-        keyword  = pair_cfg["poly_slug"]
+    async def _handle_signal(self, signal: Signal):
+        pair_cfg   = config.PAIRS[signal.symbol]
+        multiplier = self._get_trend_multiplier(signal.symbol, signal.direction)
+        bet_usd    = pair_cfg["bets"][signal.sig_type] * multiplier
+        keyword    = pair_cfg["poly_slug"]
 
+        trend_info = f" [ТРЕНД x{multiplier}]" if multiplier > 1 else ""
         log.info(
             f"[{signal.symbol.upper()}] {'='*50}\n"
-            f"  Signal:    {signal.sig_type} ({signal.direction})\n"
+            f"  Signal:    {signal.sig_type} ({signal.direction}){trend_info}\n"
             f"  Bet:       ${bet_usd}\n"
             f"  Hour:      {signal.hour_start.strftime('%H:%M UTC')}\n"
             f"  {'='*50}"
         )
 
-        # Ищем рынок на Polymarket
         market = await self._finder.find(keyword, signal.hour_start)
         if market is None:
             log.error(
@@ -143,7 +155,6 @@ class Bot:
             )
             return
 
-        # Проверяем цену входа
         token_id = market.yes_token_id if signal.direction == "YES" else market.no_token_id
         price = await self._exec.get_book_price(token_id)
 
@@ -157,7 +168,6 @@ class Bot:
         if price > 0:
             log.info(f"[{signal.symbol.upper()}] Entry price: {price:.2f}¢ ✓")
 
-        # Размещаем ордер
         result = await self._exec.place(signal, market, bet_usd)
 
         if result.success:
@@ -168,9 +178,9 @@ class Bot:
             )
             asyncio.create_task(send(
                 config.TG_TOKEN, config.TG_CHAT_ID,
-                fmt_open(signal.symbol, signal.sig_type, signal.direction, bet_usd, result.avg_price, config.DRY_RUN),
+                fmt_open(signal.symbol, signal.sig_type, signal.direction,
+                         bet_usd, result.avg_price, config.DRY_RUN),
             ))
-            # Записываем в журнал
             log_open(
                 pair=signal.symbol,
                 signal=signal.sig_type,
@@ -183,12 +193,12 @@ class Bot:
                 dry_run=config.DRY_RUN,
             )
             asyncio.create_task(
-                self._schedule_resolution_check(signal, market, result.order_id, result.avg_price, bet_usd)
+                self._schedule_resolution_check(
+                    signal, market, result.order_id, result.avg_price, bet_usd
+                )
             )
         else:
-            log.error(
-                f"[{signal.symbol.upper()}] ORDER FAILED: {result.error}"
-            )
+            log.error(f"[{signal.symbol.upper()}] ORDER FAILED: {result.error}")
 
     # ── DC signal handler (пирамидинг) ────────────────────────────────────────
 
@@ -232,7 +242,8 @@ class Bot:
             )
             asyncio.create_task(send(
                 config.TG_TOKEN, config.TG_CHAT_ID,
-                fmt_open(signal.symbol, f"DC[{level}]", signal.direction, bet_usd, result.avg_price, config.DRY_RUN),
+                fmt_open(signal.symbol, f"DC[{level}]", signal.direction,
+                         bet_usd, result.avg_price, config.DRY_RUN),
             ))
             log_open(
                 pair=signal.symbol,
@@ -247,7 +258,9 @@ class Bot:
                 dc_level=level,
             )
             asyncio.create_task(
-                self._schedule_dc_resolution(signal, market, level, result.order_id, result.avg_price)
+                self._schedule_dc_resolution(
+                    signal, market, level, result.order_id, result.avg_price
+                )
             )
         else:
             log.error(f"[{signal.symbol.upper()}] DC ORDER FAILED: {result.error}")
@@ -262,29 +275,19 @@ class Bot:
         entry_price: float,
         bet_usd: float,
     ):
-        """
-        Ждём до конца часа и проверяем результат.
-        Win = направление верное (YES выиграл если цена выросла).
-        Обновляем prev_b_win / prev_d_win.
-        """
-        now = datetime.now(tz=timezone.utc)
-        resolve_at = market.end_date
-        wait_sec = (resolve_at - now).total_seconds() + 30  # +30s после резолюции
+        now      = datetime.now(tz=timezone.utc)
+        wait_sec = (market.end_date - now).total_seconds() + 30
 
         if wait_sec > 0:
             log.info(
                 f"[{signal.symbol.upper()}] Waiting {wait_sec:.0f}s for resolution "
-                f"at {resolve_at.strftime('%H:%M UTC')}..."
+                f"at {market.end_date.strftime('%H:%M UTC')}..."
             )
             await asyncio.sleep(wait_sec)
 
-        # Получаем результат через Gamma API
         win = await self._check_resolution(market)
         if win is None:
-            log.warning(
-                f"[{signal.symbol.upper()}] Could not determine resolution "
-                f"for {signal.sig_type}"
-            )
+            log.warning(f"[{signal.symbol.upper()}] Could not determine resolution")
             return
 
         outcome = "WIN ✓" if win else "LOSS ✗"
@@ -299,7 +302,7 @@ class Bot:
 
         if signal.sig_type in ("B", "C"):
             self._state.set_prev_b_win(signal.symbol, win)
-        else:  # D, D_C
+        else:
             self._state.set_prev_d_win(signal.symbol, win)
 
     async def _schedule_dc_resolution(
@@ -310,8 +313,7 @@ class Bot:
         order_id: str,
         entry_price: float,
     ):
-        """Ждём результата DC сделки и обновляем уровень пирамиды."""
-        now = datetime.now(tz=timezone.utc)
+        now      = datetime.now(tz=timezone.utc)
         wait_sec = (market.end_date - now).total_seconds() + 30
         if wait_sec > 0:
             await asyncio.sleep(wait_sec)
@@ -342,11 +344,6 @@ class Bot:
         )
 
     async def _check_resolution(self, market) -> bool | None:
-        """
-        Проверяет разрешился ли рынок и в какую сторону.
-        Returns True (YES выиграл) / False (NO выиграл) / None (ошибка).
-        """
-        import aiohttp
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -355,14 +352,11 @@ class Bot:
                 ) as resp:
                     data = await resp.json()
 
-            resolved = data.get("resolved", False)
-            if not resolved:
-                # Рынок ещё не разрешён — подождём ещё
+            if not data.get("resolved", False):
                 await asyncio.sleep(60)
                 return await self._check_resolution(market)
 
-            winning_outcome = data.get("winningOutcome", "")
-            return winning_outcome.upper() == "YES"
+            return data.get("winningOutcome", "").upper() == "YES"
 
         except Exception as e:
             log.error(f"Resolution check failed: {e}")
@@ -379,4 +373,5 @@ class Bot:
             log.info("*** DRY RUN MODE — ордера не размещаются ***")
 
         print_summary()
+        await self._init_daily_trend()
         await self._feed.run()
