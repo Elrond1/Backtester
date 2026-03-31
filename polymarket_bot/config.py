@@ -30,7 +30,7 @@ CHAIN_ID    = 137   # Polygon mainnet
 PAIRS = {
     "btcusdt": {
         "label":      "BTC",
-        "poly_slug":  "bitcoin",   # ключевое слово для поиска рынка на Polymarket
+        "poly_slug":  "Bitcoin Up or Down",   # ключевое слово для поиска рынка на Polymarket
         "bets": {
             # $100 старт: BTC = 2% / 3% капитала (мин. ордер $1)
             "B":   2,   # $ на сделку
@@ -46,7 +46,7 @@ PAIRS = {
     },
     "dogeusdt": {
         "label":     "DOGE",
-        "poly_slug": "dogecoin",
+        "poly_slug": "Dogecoin Up or Down",
         "bets": {
             # $100 старт: DOGE/BNB = 1% капитала (мин. ордер $1)
             "B":   1,
@@ -62,7 +62,7 @@ PAIRS = {
     },
     "bnbusdt": {
         "label":     "BNB",
-        "poly_slug": "bnb",
+        "poly_slug": "BNB Up or Down",
         "bets": {
             # $100 старт
             "B":   1,
