@@ -30,7 +30,7 @@ CHAIN_ID    = 137   # Polygon mainnet
 PAIRS = {
     "btcusdt": {
         "label":      "BTC",
-        "poly_slug":  "Bitcoin Up or Down",   # ключевое слово для поиска рынка на Polymarket
+        "poly_slug":  "bitcoin",   # префикс для построения slug: bitcoin-up-or-down-{date}-{hour}-et
         "bets": {
             # $100 старт: BTC = 2% / 3% капитала (мин. ордер $1)
             "B":   2,   # $ на сделку
@@ -46,7 +46,7 @@ PAIRS = {
     },
     "ethusdt": {
         "label":     "ETH",
-        "poly_slug": "Ethereum Up or Down",
+        "poly_slug": "ethereum",
         "bets": {
             # $100 старт: ETH/SOL = 1% капитала (мин. ордер $1)
             "B":   1,
@@ -62,7 +62,7 @@ PAIRS = {
     },
     "solusdt": {
         "label":     "SOL",
-        "poly_slug": "Solana Up or Down",
+        "poly_slug": "solana",
         "bets": {
             # $100 старт
             "B":   1,

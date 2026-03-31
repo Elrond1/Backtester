@@ -1,14 +1,14 @@
 """
 Поиск Polymarket рынков для 1h крипто контрактов.
 
-Polymarket создаёт рынки вида:
-  "Will Bitcoin (BTC) be higher at 15:00 UTC than at 14:00 UTC?"
+Slug строится по текущей дате/часу в ET:
+  bitcoin-up-or-down-march-31-2026-3pm-et
+  ethereum-up-or-down-march-31-2026-3pm-et
+  solana-up-or-down-march-31-2026-3pm-et
 
-Gamma API используется для поиска и кэширования market IDs.
 Кэш обновляется каждый час.
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -19,6 +19,38 @@ import aiohttp
 from . import config
 
 log = logging.getLogger(__name__)
+
+# EDT = UTC-4 (14 Mar – 7 Nov), EST = UTC-5 (остальное время)
+def _et_offset(dt: datetime) -> timedelta:
+    year = dt.year
+    # DST начинается второе воскресенье марта, заканчивается первое воскресенье ноября
+    # Упрощённо: март 14 – ноябрь 7
+    dst_start = datetime(year, 3, 14, 2, tzinfo=timezone.utc)
+    dst_end   = datetime(year, 11, 7,  2, tzinfo=timezone.utc)
+    if dst_start <= dt < dst_end:
+        return timedelta(hours=-4)   # EDT
+    return timedelta(hours=-5)       # EST
+
+
+def build_slug(coin: str, hour_utc: datetime) -> str:
+    """
+    Строит slug для Polymarket hourly рынка.
+
+    coin:     "bitcoin" | "ethereum" | "solana"
+    hour_utc: HH:00 UTC — начало часа (signal.hour_start)
+
+    Пример: bitcoin-up-or-down-march-31-2026-3pm-et
+    """
+    et_time = hour_utc + _et_offset(hour_utc)
+    hour24  = et_time.hour
+    ampm    = "am" if hour24 < 12 else "pm"
+    hour12  = hour24 % 12
+    if hour12 == 0:
+        hour12 = 12
+    month = et_time.strftime("%B").lower()   # march, april ...
+    day   = et_time.day
+    year  = et_time.year
+    return f"{coin}-up-or-down-{month}-{day}-{year}-{hour12}{ampm}-et"
 
 
 @dataclass
@@ -33,121 +65,114 @@ class PolyMarket:
 
 class MarketFinder:
     """
-    Ищет активные Polymarket рынки для заданных крипто пар и временного слота.
-    Результаты кэшируются по (symbol, hour) ключу.
+    Ищет активные Polymarket рынки по автоматически сгенерированному slug.
+    Результаты кэшируются по (slug) ключу.
     """
 
     def __init__(self):
-        self._cache: dict[tuple, PolyMarket] = {}
+        self._cache: dict[str, PolyMarket] = {}
 
     async def find(
         self,
-        symbol_keyword: str,    # "bitcoin", "dogecoin", "bnb"
-        target_hour: datetime,  # HH:00 UTC — начало часа для контракта
+        coin_keyword: str,      # "bitcoin" | "ethereum" | "solana"
+        target_hour: datetime,  # HH:00 UTC — начало часа
     ) -> Optional[PolyMarket]:
         """
-        Возвращает рынок который резолвится в target_hour + 1h (т.е. HH+1:00).
+        Возвращает рынок для данного часа по slug.
         """
-        resolve_time = target_hour + timedelta(hours=1)
-        cache_key = (symbol_keyword, resolve_time.strftime("%Y%m%d%H"))
+        slug = build_slug(coin_keyword, target_hour)
 
-        if cache_key in self._cache:
-            m = self._cache[cache_key]
+        if slug in self._cache:
+            m = self._cache[slug]
             if m.active:
                 return m
 
-        market = await self._search(symbol_keyword, resolve_time)
+        market = await self._search(slug)
         if market:
-            self._cache[cache_key] = market
+            self._cache[slug] = market
             log.info(
-                f"Found market for {symbol_keyword} @ {resolve_time.strftime('%H:%M UTC')}: "
-                f"{market.question[:70]}"
+                f"[{coin_keyword.upper()}] Рынок найден: {market.question} "
+                f"(slug={slug})"
             )
         else:
-            log.warning(
-                f"No market found for {symbol_keyword} @ {resolve_time.strftime('%H:%M UTC')}"
+            log.error(
+                f"[{coin_keyword.upper()}] Market not found – SKIP (slug: {slug})"
             )
 
         return market
 
-    async def _search(
-        self,
-        keyword: str,
-        resolve_time: datetime,
-    ) -> Optional[PolyMarket]:
+    async def _search(self, slug: str) -> Optional[PolyMarket]:
         """
-        Ищет в Gamma API активные рынки по ключевому слову + времени резолюции.
+        Запрашивает Gamma API по slug события.
         """
-        resolve_iso = resolve_time.strftime("%Y-%m-%dT%H:%M:%S")   # напр. 2025-03-26T15:00:00
-
-        params = {
-            "active":       "true",
-            "closed":       "false",
-            "limit":        "50",
-            "search":       keyword,
-        }
-
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{config.GAMMA_HOST}/markets",
-                    params=params,
+                    f"{config.GAMMA_HOST}/events",
+                    params={"slug": slug},
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.status != 200:
-                        log.error(f"Gamma API error: {resp.status}")
+                        log.error(f"Gamma API error: {resp.status} for slug={slug}")
                         return None
                     data = await resp.json()
         except Exception as e:
             log.error(f"Gamma API request failed: {e}")
             return None
 
-        markets = data if isinstance(data, list) else data.get("data", [])
+        events = data if isinstance(data, list) else data.get("data", [])
+        if not events:
+            return None
 
-        # Фильтруем по времени резолюции (с допуском ±5 минут)
-        best: Optional[dict] = None
-        best_delta = timedelta(days=999)
+        event   = events[0]
+        markets = event.get("markets", [])
+        if not markets:
+            return None
 
-        for m in markets:
-            # Пропускаем неактивные / без токенов
-            if not m.get("active"):
-                continue
-            tokens = m.get("tokens", [])
-            if len(tokens) < 2:
-                continue
-
-            end_str = m.get("endDate") or m.get("end_date_iso", "")
-            if not end_str:
-                continue
-
-            try:
-                # ISO string может быть с Z или +00:00
-                end_str = end_str.replace("Z", "+00:00")
-                end_dt = datetime.fromisoformat(end_str).astimezone(timezone.utc)
-            except ValueError:
-                continue
-
-            delta = abs(end_dt - resolve_time)
-            if delta < timedelta(minutes=5) and delta < best_delta:
-                best = m
-                best_delta = delta
-
+        # Берём первый активный рынок из события
+        best = next((m for m in markets if m.get("active")), None)
         if not best:
             return None
 
-        tokens = best["tokens"]
-        yes_token = next((t for t in tokens if t.get("outcome", "").upper() == "YES"), None)
-        no_token  = next((t for t in tokens if t.get("outcome", "").upper() == "NO"),  None)
+        # Парсим токены из clobTokenIds + outcomes
+        token_ids = best.get("clobTokenIds")
+        if isinstance(token_ids, str):
+            import json
+            token_ids = json.loads(token_ids)
 
-        if not yes_token or not no_token:
-            log.warning(f"Market has unexpected token structure: {tokens}")
+        outcomes = best.get("outcomes", [])
+        if isinstance(outcomes, str):
+            import json
+            outcomes = json.loads(outcomes)
+
+        if not token_ids or len(token_ids) < 2:
+            log.warning(f"Нет clobTokenIds для slug={slug}: {token_ids}")
             return None
 
+        # outcomes: ["Up", "Down"] → Up=YES, Down=NO
+        # Если outcomes нет — первый токен YES, второй NO
+        if outcomes and len(outcomes) >= 2:
+            up_idx   = next((i for i, o in enumerate(outcomes) if o.lower() == "up"), 0)
+            down_idx = next((i for i, o in enumerate(outcomes) if o.lower() == "down"), 1)
+        else:
+            up_idx, down_idx = 0, 1
+
+        yes_token_id = token_ids[up_idx]
+        no_token_id  = token_ids[down_idx]
+
+        # Парсим endDate
+        end_str = best.get("endDate", "")
+        try:
+            end_str = end_str.replace("Z", "+00:00")
+            end_dt  = datetime.fromisoformat(end_str).astimezone(timezone.utc)
+        except (ValueError, AttributeError):
+            end_dt = datetime.now(timezone.utc) + timedelta(hours=1)
+
         return PolyMarket(
-            condition_id=best.get("conditionId", best.get("condition_id", "")),
+            condition_id=best.get("conditionId", ""),
             question=best.get("question", ""),
-            yes_token_id=yes_token["token_id"],
-            no_token_id=no_token["token_id"],
-            end_date=resolve_time,
+            yes_token_id=str(yes_token_id),
+            no_token_id=str(no_token_id),
+            end_date=end_dt,
             active=True,
         )
