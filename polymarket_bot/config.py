@@ -4,7 +4,7 @@ Polymarket Bot — конфигурация.
 Перед запуском:
 1. Создай .env файл с POLY_PRIVATE_KEY=0x...
 2. Настрой BETS под свой капитал
-3. Проверь лимиты ликвидности на Polymarket (BTC: $500/$750, DOGE/BNB: $75/$100)
+3. Проверь лимиты ликвидности на Polymarket (BTC: $500/$750, ETH/SOL: $75/$100)
 
 Текущий режим: $100 стартовый капитал (пропорционально к основным ставкам 1:100)
 Минимальный ордер Polymarket: $1
@@ -44,11 +44,11 @@ PAIRS = {
             # "D_C": 300,
         },
     },
-    "dogeusdt": {
-        "label":     "DOGE",
-        "poly_slug": "Dogecoin Up or Down",
+    "ethusdt": {
+        "label":     "ETH",
+        "poly_slug": "Ethereum Up or Down",
         "bets": {
-            # $100 старт: DOGE/BNB = 1% капитала (мин. ордер $1)
+            # $100 старт: ETH/SOL = 1% капитала (мин. ордер $1)
             "B":   1,
             "C":   1,
             "D":   1,
@@ -60,9 +60,9 @@ PAIRS = {
             # "D_C": 100,
         },
     },
-    "bnbusdt": {
-        "label":     "BNB",
-        "poly_slug": "BNB Up or Down",
+    "solusdt": {
+        "label":     "SOL",
+        "poly_slug": "Solana Up or Down",
         "bets": {
             # $100 старт
             "B":   1,
@@ -82,9 +82,9 @@ PAIRS = {
 # Базовая ставка уровня 1. Уровни: $1 → $2 → $4 (для $100 капитала)
 # Уровни: $100 → $200 → $400 (для $10k капитала)
 DC_BASE_BETS = {
-    "btcusdt":  1,   # $1 базовая ($100 старт) / $100 ($10k старт)
-    "dogeusdt": 1,
-    "bnbusdt":  1,
+    "btcusdt": 1,   # $1 базовая ($100 старт) / $100 ($10k старт)
+    "ethusdt": 1,
+    "solusdt": 1,
 }
 # Множители пирамиды: уровень 1 → ×1, уровень 2 → ×2, уровень 3 → ×4
 DC_PYRAMID_MULTIPLIERS = {1: 1, 2: 2, 3: 4}
