@@ -38,6 +38,10 @@ class Bot:
             symbols=self._symbols,
             on_candle_close=self._on_candle,
         )
+        # Сбор сигналов по часу для triple-confirm логики
+        # {hour_iso: [Signal, ...]}
+        self._pending_hour_signals: dict[str, list] = {}
+        self._pending_hour_tasks:   dict[str, bool]  = {}
 
     # ── candle handler ────────────────────────────────────────────────────────
 
@@ -59,7 +63,16 @@ class Bot:
                 hour_iso=signal.hour_start.isoformat(),
                 direction=signal.direction,
             )
-            await self._handle_signal(signal)
+            # Собираем сигналы часа для triple-confirm логики
+            hour_key = signal.hour_start.isoformat()
+            if hour_key not in self._pending_hour_signals:
+                self._pending_hour_signals[hour_key] = []
+            self._pending_hour_signals[hour_key].append(signal)
+
+            # Запускаем обработку через TRIPLE_CONFIRM_WAIT_SEC (один раз на час)
+            if hour_key not in self._pending_hour_tasks:
+                self._pending_hour_tasks[hour_key] = True
+                asyncio.create_task(self._process_hour_signals(hour_key))
             return
 
         # ── DC сигнал (HH:30) ─────────────────────────────────────────────────
@@ -72,11 +85,45 @@ class Bot:
             self._state.clear_dc_pending(candle.symbol)
             await self._handle_dc_signal(dc_signal)
 
+    # ── triple-confirm обработка ──────────────────────────────────────────────
+
+    async def _process_hour_signals(self, hour_key: str):
+        """
+        Ждём TRIPLE_CONFIRM_WAIT_SEC секунд чтобы собрать сигналы от всех пар.
+        Если все пары дают одно направление → ставка × TRIPLE_CONFIRM_MULTIPLIER.
+        """
+        await asyncio.sleep(config.TRIPLE_CONFIRM_WAIT_SEC)
+
+        signals = self._pending_hour_signals.pop(hour_key, [])
+        self._pending_hour_tasks.pop(hour_key, None)
+
+        if not signals:
+            return
+
+        # Проверяем: все сигналы одного направления?
+        directions = [s.direction for s in signals]
+        all_same   = len(set(directions)) == 1
+        multiplier = config.TRIPLE_CONFIRM_MULTIPLIER if (len(signals) == 3 and all_same) else 1
+
+        if len(signals) == 3 and all_same:
+            log.info(
+                f"[TRIPLE] Все 3 пары → {directions[0]}  "
+                f"Ставки ×{multiplier}  WR ожидается ~71.9%"
+            )
+            asyncio.create_task(send(
+                config.TG_TOKEN, config.TG_CHAT_ID,
+                f"🔥 <b>TRIPLE CONFIRM</b> — все 3 пары {directions[0]}\n"
+                f"Ставки удвоены ×{multiplier}"
+            ))
+
+        for signal in signals:
+            await self._handle_signal(signal, bet_multiplier=multiplier)
+
     # ── signal handler ────────────────────────────────────────────────────────
 
-    async def _handle_signal(self, signal: Signal):
+    async def _handle_signal(self, signal: Signal, bet_multiplier: int = 1):
         pair_cfg = config.PAIRS[signal.symbol]
-        bet_usd  = pair_cfg["bets"][signal.sig_type]
+        bet_usd  = pair_cfg["bets"][signal.sig_type] * bet_multiplier
         keyword  = pair_cfg["poly_slug"]
 
         log.info(
