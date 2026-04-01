@@ -152,9 +152,9 @@ class Bot:
             f"  {'='*50}"
         )
 
-        # Ищем рынок СЛЕДУЮЩЕГО часа — он закрывается в (hour_start + 1h)
-        # Пример: сигнал в 15:15 UTC → ищем "12pm-et" (закрытие 16:00 UTC)
-        market = await self._finder.find(keyword, signal.hour_start + timedelta(hours=1))
+        # Ищем рынок ТЕКУЩЕГО часа — slug строится по hour_start (HH:00 UTC)
+        # Пример: сигнал в 16:15 UTC, hour_start=16:00 UTC → "12pm-et" (закрытие 17:00 UTC)
+        market = await self._finder.find(keyword, signal.hour_start)
         if market is None:
             log.error(
                 f"[{signal.symbol.upper()}] Market not found — SKIP "
@@ -224,7 +224,7 @@ class Bot:
             f"  {'='*50}"
         )
 
-        market = await self._finder.find(keyword, signal.hour_start + timedelta(hours=1))
+        market = await self._finder.find(keyword, signal.hour_start)
         if market is None:
             log.error(f"[{signal.symbol.upper()}] DC: Market not found — SKIP")
             return
