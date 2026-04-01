@@ -107,6 +107,7 @@ class Executor:
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=size_usd,    # $ сумма (не количество токенов)
+                side="BUY",
             )
             signed = self._client.create_market_order(order_args)
             resp = self._client.post_order(signed, OrderType.FOK)  # Fill-or-Kill
@@ -115,17 +116,28 @@ class Executor:
         loop = __import__("asyncio").get_event_loop()
         resp = await loop.run_in_executor(None, _sync)
 
-        if resp and resp.get("success"):
+        # resp может быть dict или объект с атрибутами
+        if resp is None:
+            return OrderResult(success=False, error="No response")
+
+        if isinstance(resp, dict):
+            success = resp.get("success", False)
             return OrderResult(
-                success=True,
+                success=bool(success),
                 order_id=resp.get("orderID", ""),
                 filled=float(resp.get("size", 0)),
                 avg_price=float(resp.get("price", 0)),
+                error="" if success else str(resp),
             )
         else:
+            # объект py-clob-client
+            success = getattr(resp, "success", False)
             return OrderResult(
-                success=False,
-                error=str(resp),
+                success=bool(success),
+                order_id=getattr(resp, "orderID", "") or getattr(resp, "order_id", ""),
+                filled=float(getattr(resp, "size", 0) or 0),
+                avg_price=float(getattr(resp, "price", 0) or 0),
+                error="" if success else str(resp),
             )
 
     async def get_book_price(self, token_id: str) -> float:
@@ -142,9 +154,15 @@ class Executor:
             book = await loop.run_in_executor(
                 None, self._client.get_order_book, token_id
             )
-            asks = book.get("asks", [])
+            # book может быть dict или объект OrderBookSummary
+            if isinstance(book, dict):
+                asks = book.get("asks", [])
+            else:
+                asks = getattr(book, "asks", [])
             if asks:
-                return float(asks[0]["price"])
+                ask = asks[0]
+                price = ask["price"] if isinstance(ask, dict) else getattr(ask, "price", 0)
+                return float(price)
         except Exception as e:
             log.warning(f"Failed to get book price: {e}")
 
