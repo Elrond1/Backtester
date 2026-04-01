@@ -104,6 +104,11 @@ class Bot:
                 log.info(f"[{candle.symbol.upper()}] Новый день. Вчера: {direction}")
             self._day_open[candle.symbol] = candle.open
 
+        # При начале нового часа (HH:00) сбрасываем pending от предыдущего часа
+        # чтобы незакрытый DC прошлого часа не сработал ложно в следующем часу
+        if candle.open_dt.minute == 0:
+            self._state.clear_dc_pending(candle.symbol)
+
         # ── S2 сигнал (HH:15) ─────────────────────────────────────────────────
         signal = check_signal(
             candle=candle,
