@@ -92,6 +92,7 @@ class MarketFinder:
             self._cache[slug] = market
             log.info(
                 f"[{coin_keyword.upper()}] Рынок найден: {market.question} "
+                f"| закрытие: {market.end_date.strftime('%Y-%m-%d %H:%M UTC')} "
                 f"(slug={slug})"
             )
         else:
