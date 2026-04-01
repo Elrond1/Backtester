@@ -127,9 +127,9 @@ class BinanceFeed:
 
                         if candle.is_closed:
                             self._buffers[candle.symbol].push(candle)
-                            log.debug(
+                            log.info(
                                 f"[{candle.symbol.upper()}] closed "
-                                f"{candle.open_dt} "
+                                f"{candle.open_dt.strftime('%H:%M')} "
                                 f"{'▲' if candle.green else '▼'} "
                                 f"o={candle.open} c={candle.close}"
                             )
