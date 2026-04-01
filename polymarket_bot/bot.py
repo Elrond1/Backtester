@@ -358,7 +358,8 @@ class Bot:
                 await asyncio.sleep(60)
                 return await self._check_resolution(market)
 
-            return data.get("winningOutcome", "").upper() == "YES"
+            outcome = data.get("winningOutcome", "").lower()
+            return outcome in ("yes", "up")
 
         except Exception as e:
             log.error(f"Resolution check failed: {e}")
