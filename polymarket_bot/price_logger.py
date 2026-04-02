@@ -37,7 +37,9 @@ async def get_token_price(token_id: str) -> float:
                 data = await r.json()
         asks = data.get("asks", [])
         if asks:
-            return float(asks[0]["price"])
+            prices = [float(a["price"]) for a in asks if "price" in a]
+            if prices:
+                return min(prices)
     except Exception as e:
         log.warning(f"Ошибка получения цены {token_id[:12]}: {e}")
     return 0.0

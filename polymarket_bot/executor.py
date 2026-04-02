@@ -160,9 +160,16 @@ class Executor:
             else:
                 asks = getattr(book, "asks", [])
             if asks:
-                ask = asks[0]
-                price = ask["price"] if isinstance(ask, dict) else getattr(ask, "price", 0)
-                return float(price)
+                # Берём МИНИМАЛЬНУЮ цену из asks (независимо от порядка сортировки)
+                prices = []
+                for a in asks:
+                    p = a["price"] if isinstance(a, dict) else getattr(a, "price", 0)
+                    try:
+                        prices.append(float(p))
+                    except (TypeError, ValueError):
+                        pass
+                if prices:
+                    return min(prices)
         except Exception as e:
             log.warning(f"Failed to get book price: {e}")
 
