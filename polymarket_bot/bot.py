@@ -152,10 +152,9 @@ class Bot:
             f"  {'='*50}"
         )
 
-        # Slug "Xpm-et" = рынок разрешается В X pm ET = КОНЕЦ текущего часа Binance.
-        # Пример: сигнал в 18:15 UTC, hour_start=18:00 UTC, конец часа=19:00 UTC=3pm EDT
-        # build_slug(19:00) → "3pm-et" ✓  |  build_slug(18:00) → "2pm-et" = уже закрыт ❌
-        market = await self._finder.find(keyword, signal.hour_start + timedelta(hours=1))
+        # Slug "Xam/pm-et" = рынок НАЧИНАЕТСЯ в X am/pm ET и закрывается через час.
+        # Проверено через API: build_slug(06:00 UTC) → "2am-et" → endDate=07:00 UTC ✓
+        market = await self._finder.find(keyword, signal.hour_start)
         if market is None:
             log.error(
                 f"[{signal.symbol.upper()}] Market not found — SKIP "
@@ -225,7 +224,7 @@ class Bot:
             f"  {'='*50}"
         )
 
-        market = await self._finder.find(keyword, signal.hour_start + timedelta(hours=1))
+        market = await self._finder.find(keyword, signal.hour_start)
         if market is None:
             log.error(f"[{signal.symbol.upper()}] DC: Market not found — SKIP")
             return
