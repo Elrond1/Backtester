@@ -163,7 +163,13 @@ class Bot:
             return
 
         token_id = market.yes_token_id if signal.direction == "YES" else market.no_token_id
-        price = await self._exec.get_book_price(token_id)
+        yes_price = await self._exec.get_book_price(market.yes_token_id)
+        no_price  = await self._exec.get_book_price(market.no_token_id)
+        log.info(
+            f"[{signal.symbol.upper()}] Цены: YES(Up)={yes_price:.2f}¢  NO(Down)={no_price:.2f}¢"
+            f" | покупаем {signal.direction} токен"
+        )
+        price = yes_price if signal.direction == "YES" else no_price
 
         if price > config.MAX_ENTRY_PRICE:
             log.warning(
@@ -230,7 +236,13 @@ class Bot:
             return
 
         token_id = market.yes_token_id if signal.direction == "YES" else market.no_token_id
-        price = await self._exec.get_book_price(token_id)
+        yes_price = await self._exec.get_book_price(market.yes_token_id)
+        no_price  = await self._exec.get_book_price(market.no_token_id)
+        log.info(
+            f"[{signal.symbol.upper()}] DC Цены: YES(Up)={yes_price:.2f}¢  NO(Down)={no_price:.2f}¢"
+            f" | покупаем {signal.direction} токен"
+        )
+        price = yes_price if signal.direction == "YES" else no_price
 
         if price > config.MAX_ENTRY_PRICE:
             log.warning(
