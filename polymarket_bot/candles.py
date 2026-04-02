@@ -13,6 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Deque, Dict, Optional
 
+import aiohttp
 import websockets
 
 log = logging.getLogger(__name__)
@@ -82,6 +83,35 @@ class BinanceFeed:
 
     def get_buffer(self, symbol: str) -> CandleBuffer:
         return self._buffers[symbol.lower()]
+
+    async def preload(self):
+        """Загружает последние 10 закрытых свечей через Binance REST API."""
+        url = "https://api.binance.com/api/v3/klines"
+        for symbol in self._symbols:
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(url, params={
+                        "symbol": symbol.upper(),
+                        "interval": self._interval,
+                        "limit": BUFFER_SIZE + 1,  # +1 т.к. последняя может быть незакрытой
+                    }) as r:
+                        data = await r.json()
+                candles_loaded = 0
+                for k in data[:-1]:  # последнюю пропускаем — она ещё открыта
+                    candle = Candle(
+                        symbol=symbol,
+                        open_time=k[0],
+                        open=float(k[1]),
+                        high=float(k[2]),
+                        low=float(k[3]),
+                        close=float(k[4]),
+                        is_closed=True,
+                    )
+                    self._buffers[symbol].push(candle)
+                    candles_loaded += 1
+                log.info(f"[{symbol.upper()}] Preloaded {candles_loaded} candles")
+            except Exception as e:
+                log.warning(f"[{symbol.upper()}] Preload failed: {e}")
 
     def _stream_url(self) -> str:
         streams = "/".join(

@@ -394,4 +394,5 @@ class Bot:
 
         print_summary()
         await self._init_daily_trend()
+        await self._feed.preload()   # загружаем последние 10 свечей сразу — не ждём 1ч45мин
         await self._feed.run()
