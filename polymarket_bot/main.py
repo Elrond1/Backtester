@@ -21,8 +21,6 @@ def setup_logging():
     datefmt = "%Y-%m-%d %H:%M:%S"
 
     handlers = [logging.StreamHandler(sys.stdout)]
-    if config.LOG_FILE:
-        handlers.append(logging.FileHandler(config.LOG_FILE))
 
     logging.basicConfig(
         level=getattr(logging, config.LOG_LEVEL),
